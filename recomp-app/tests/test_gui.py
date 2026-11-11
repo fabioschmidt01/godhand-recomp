@@ -26,6 +26,8 @@ class GuiTest(unittest.TestCase):
         self.assertGreater(w.doctor_table.rowCount(), 5, "a checagem de ambiente não preencheu a tabela")
         self.assertEqual(w.stage_table.rowCount(), len(STAGES))
         self.assertFalse(w.cancel_btn.isEnabled())
+        tabs = [w.tabs.tabText(i) for i in range(w.tabs.count())]
+        self.assertEqual(tabs, ["Pipeline", "Patches", "Mods", "Ambiente"])  # patches e mods separados
         self.assertTrue(w.close())
         self.assertFalse(w.worker.isRunning())
 

@@ -8,13 +8,13 @@ from pathlib import Path
 from . import __version__
 from .config import load_env
 from .doctor import run_doctor
-from .mods import load_mods
+from .mods import load_mods, load_patches, load_textures
 from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, StageError, export_map, run_game, run_pipeline
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="recomp", description="Recomp estático de PS2: ISO -> C++ -> exe nativo")
-    ap.add_argument("command", choices=["gui", "doctor", "mods", "all", "run", "export-map", *[k.replace("_", "-") for k in STAGE_KEYS]],
+    ap.add_argument("command", choices=["gui", "doctor", "patches", "mods", "all", "run", "export-map", *[k.replace("_", "-") for k in STAGE_KEYS]],
                     help="gui abre a interface; all roda o pipeline inteiro; uma etapa roda até ela; run executa o jogo; export-map (desenvolvimento) gera o mapa de funções com o Ghidra")
     ap.add_argument("--seconds", type=float, help="com run: encerra o jogo após esse tempo")
     ap.add_argument("--version", action="version", version=f"recomp {__version__}")
@@ -35,14 +35,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{mark:5} {c.name:36} {c.detail}")
         return 0 if all(c.ok or not c.required for c in checks) else 1
 
-    if args.command == "mods":
-        mods = load_mods(env.mods)
-        if not mods:
-            print(f"nenhum mod em {env.mods}")
-        for m in mods:
-            state = "ativo" if m.enabled else "desligado"
-            note = "" if m.applied else "  (tipo ainda não aplicado pelo pipeline)"
-            print(f"{m.order:4} {state:9} {m.type:8} {m.id:20} {m.name}{note}")
+    if args.command in ("patches", "mods"):
+        if args.command == "patches":
+            items, where = load_patches(env.patches), f"{env.patches} (solte ali arquivos .xdelta ou .pnach)"
+        else:
+            items = load_mods(env.mods) + load_textures(env.textures)
+            where = f"{env.mods} nem pacote de texturas em {env.textures}"
+        if not items:
+            print(f"nenhum item em {where}")
+        for i in items:
+            state = "ativo" if i.enabled else "desligado"
+            note = "" if i.applied else "  (tipo ainda não aplicado pelo pipeline)"
+            print(f"{i.order:4} {state:9} {i.type:8} {i.id:28} {i.name}{note}")
         return 0
 
     if args.command == "run":

@@ -1,5 +1,0 @@
-name = "Uncensor Patch (Gledson999)"
-type = "xdelta"
-enabled = true
-order = 10
-file = "uncensor.xdelta"

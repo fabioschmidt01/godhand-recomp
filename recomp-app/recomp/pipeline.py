@@ -16,7 +16,7 @@ from typing import Callable
 
 from .config import Env
 from .iso9660 import IsoReader
-from .mods import load_mods
+from .mods import load_patches
 
 
 class StageError(RuntimeError):
@@ -194,13 +194,13 @@ def ingest(ctx: Context) -> str:
 
 
 def patch_iso(ctx: Context) -> str:
-    patches = [m for m in load_mods(ctx.env.mods) if m.enabled and m.type == "xdelta"]
+    patches = [p for p in load_patches(ctx.env.patches) if p.enabled and p.type == "xdelta"]
     if not patches:
         ctx.effective_iso = ctx.iso
         return "nenhum patch xdelta ativo; usando a ISO original"
     for m in patches:
         if not m.path.is_file():
-            raise StageError(f"mod {m.id}: arquivo {m.path} não existe")
+            raise StageError(f"patch {m.id}: arquivo {m.path} não existe")
     out = ctx.workdir / "iso" / "patched.iso"
     key = key_of(ctx.game["iso_sha1"], *[sha1_file(m.path) for m in patches])
     ctx.effective_iso = out

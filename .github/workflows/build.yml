@@ -83,6 +83,7 @@ jobs:
         working-directory: recomp-app
         run: |
           python -m recomp --version
+          python -m recomp patches
           python -m recomp mods
 
       - name: Monta o pacote
@@ -93,7 +94,7 @@ jobs:
           $pkg = "dist/$name"
           New-Item -ItemType Directory -Force "$pkg/recomp-app/bin", "$pkg/third_party" | Out-Null
           Copy-Item README.md, CHANGELOG.md $pkg
-          Copy-Item -Recurse mods "$pkg/mods"
+          foreach ($dir in 'patches', 'mods', 'textures') { Copy-Item -Recurse $dir "$pkg/$dir" }
           foreach ($item in 'recomp', 'games', 'env.toml', 'env.local.example.toml', 'requirements.txt', 'recomp.bat', 'recomp-gui.bat', 'README.md') {
             Copy-Item -Recurse "recomp-app/$item" "$pkg/recomp-app/$item"
           }

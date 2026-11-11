@@ -7,11 +7,17 @@
 !/CHANGELOG.md
 !/recomp-app/
 !/third_party/
+!/patches/
 !/mods/
+!/textures/
 
-# De cada mod só o manifesto é versionado; o conteúdo do patch fica local.
-/mods/*/*
-!/mods/*/mod.toml
+# Dessas três pastas só o README é versionado; patches, mods, texturas e o estado local ficam fora.
+/patches/*
+!/patches/README.md
+/mods/*
+!/mods/README.md
+/textures/*
+!/textures/README.md
 
 # Reforço, caso algum arquivo do jogo seja copiado para uma pasta liberada.
 *.iso

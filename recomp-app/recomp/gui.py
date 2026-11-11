@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from .config import load_env
 from .doctor import run_doctor
-from .mods import load_mods, save_mod
+from .mods import load_mods, load_patches, load_textures, save_item
 from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, StageError, run_game, run_pipeline
 
 STATUS = {
@@ -54,6 +54,52 @@ class Worker(QThread):
 
     def run(self) -> None:
         self.fn()
+
+
+class ItemTable(QWidget):
+    """Lista de patches ou de mods com caixa de ativar/desativar. O estado é gravado na pasta do item."""
+
+    def __init__(self, hint: str, loader, label: str, log) -> None:
+        super().__init__()
+        self.loader, self.label, self.log = loader, label, log
+        self.items: list = []
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Ativo", "Ordem", "Tipo", "Nome", "Situação"])
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.itemChanged.connect(self.toggled)
+        reload_btn = QPushButton("Recarregar")
+        reload_btn.clicked.connect(self.reload)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(hint))
+        layout.addWidget(self.table)
+        layout.addWidget(reload_btn, 0, Qt.AlignmentFlag.AlignLeft)
+
+    def reload(self) -> None:
+        self.items = self.loader()
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self.items))
+        for row, item in enumerate(self.items):
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Checked if item.enabled else Qt.CheckState.Unchecked)
+            self.table.setItem(row, 0, chk)
+            note = "aplicado no build" if item.applied else "listado; este tipo ainda não é aplicado"
+            for col, text in enumerate([str(item.order), item.type, item.name, note], start=1):
+                cell = QTableWidgetItem(text)
+                cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row, col, cell)
+        self.table.blockSignals(False)
+
+    def toggled(self, cell: QTableWidgetItem) -> None:
+        if cell.column() != 0:
+            return
+        item = self.items[cell.row()]
+        item.enabled = cell.checkState() == Qt.CheckState.Checked
+        save_item(item)
+        self.log(f"{self.label} {item.id}: {'ativado' if item.enabled else 'desativado'}.")
 
 
 class MainWindow(QMainWindow):
@@ -133,26 +179,18 @@ class MainWindow(QMainWindow):
         el.addWidget(self.doctor_btn, 0, Qt.AlignmentFlag.AlignLeft)
         el.addWidget(self.doctor_table)
 
-        # --- aba mods
-        self.mods_table = QTableWidget(0, 5)
-        self.mods_table.setHorizontalHeaderLabels(["Ativo", "Ordem", "Tipo", "Nome", "Situação"])
-        self.mods_table.verticalHeader().setVisible(False)
-        mh = self.mods_table.horizontalHeader()
-        mh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        mh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.mods_table.itemChanged.connect(self.mod_toggled)
-        reload_mods = QPushButton("Recarregar")
-        reload_mods.clicked.connect(self.load_mods)
-        self.mods_hint = QLabel(f"Cada mod é uma pasta em {self.env.mods} com um mod.toml.")
-        modw = QWidget()
-        ml = QVBoxLayout(modw)
-        ml.addWidget(self.mods_hint)
-        ml.addWidget(self.mods_table)
-        ml.addWidget(reload_mods, 0, Qt.AlignmentFlag.AlignLeft)
+        # --- abas patches e mods: coisas diferentes, cada uma com sua pasta
+        self.patches_tab = ItemTable(
+            f"Patches ficam em {self.env.patches}: solte ali os arquivos .xdelta (aplicados à ISO) e .pnach.",
+            lambda: load_patches(self.env.patches), "Patch", self.log_line)
+        self.mods_tab = ItemTable(
+            f"Mods ficam em {self.env.mods} (uma pasta por mod) e pacotes de texturas em {self.env.textures}.",
+            lambda: load_mods(self.env.mods) + load_textures(self.env.textures), "Mod", self.log_line)
 
-        tabs = QTabWidget()
+        tabs = self.tabs = QTabWidget()
         tabs.addTab(pipe, "Pipeline")
-        tabs.addTab(modw, "Mods")
+        tabs.addTab(self.patches_tab, "Patches")
+        tabs.addTab(self.mods_tab, "Mods")
         tabs.addTab(envw, "Ambiente")
 
         self.log = QPlainTextEdit()
@@ -177,7 +215,8 @@ class MainWindow(QMainWindow):
         self.signals.finished.connect(self.pipeline_done)
         self.signals.doctor.connect(self.show_doctor)
 
-        self.load_mods()
+        self.patches_tab.reload()
+        self.mods_tab.reload()
         self.start_doctor()
 
     # ------------------------------------------------------------ pipeline
@@ -286,30 +325,8 @@ class MainWindow(QMainWindow):
             self.doctor_table.setItem(row, 1, s)
             self.doctor_table.setItem(row, 2, QTableWidgetItem(c.detail))
 
-    # ------------------------------------------------------------ mods
-    def load_mods(self) -> None:
-        self.mods = load_mods(self.env.mods)
-        self.mods_table.blockSignals(True)
-        self.mods_table.setRowCount(len(self.mods))
-        for row, m in enumerate(self.mods):
-            chk = QTableWidgetItem()
-            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            chk.setCheckState(Qt.CheckState.Checked if m.enabled else Qt.CheckState.Unchecked)
-            self.mods_table.setItem(row, 0, chk)
-            note = "aplicado no build" if m.applied else "listado; este tipo ainda não é aplicado"
-            for col, text in enumerate([str(m.order), m.type, m.name, note], start=1):
-                it = QTableWidgetItem(text)
-                it.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                self.mods_table.setItem(row, col, it)
-        self.mods_table.blockSignals(False)
-
-    def mod_toggled(self, item: QTableWidgetItem) -> None:
-        if item.column() != 0:
-            return
-        mod = self.mods[item.row()]
-        mod.enabled = item.checkState() == Qt.CheckState.Checked
-        save_mod(mod)
-        self.log.appendPlainText(f"Mod {mod.id}: {'ativado' if mod.enabled else 'desativado'}.")
+    def log_line(self, text: str) -> None:
+        self.log.appendPlainText(text)
 
 
 def main() -> int:

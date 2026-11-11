@@ -13,7 +13,9 @@ O `.gitignore` é uma lista branca: só entra o que está explicitamente liberad
 |---|---|
 | `recomp-app/` | Aplicação (núcleo, CLI, GUI). Ver `recomp-app/README.md`. |
 | `third_party/PS2Recomp/` | Subtree do PS2Recomp (GPL-3.0) com as alterações deste projeto. |
-| `mods/` | Um diretório por mod; só o `mod.toml` é versionado. |
+| `patches/` | Arquivos de patch: `.xdelta` (aplicado à ISO) e `.pnach`. Só o `README.md` é versionado. |
+| `mods/` | Mods de substituição de arquivos, uma pasta por mod. Só o `README.md` é versionado. |
+| `textures/` | Pacotes de texturas. Só o `README.md` é versionado. |
 | `.github/workflows/` | `build`: verifica que nada do jogo foi versionado, compila o recompilador, roda os testes e monta o pacote único do app (release em tags). |
 
 Ficam só na máquina local: a ISO, `bios/`, `work/` (extração, projeto Ghidra, C++ gerado, builds),

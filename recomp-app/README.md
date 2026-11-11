@@ -7,7 +7,8 @@ Aplicação (GUI + CLI) que leva uma ISO de PS2 até um executável nativo em C+
 
     recomp-gui.bat               abre a interface
     recomp.bat doctor            verifica o ambiente
-    recomp.bat mods              lista os mods
+    recomp.bat patches           lista os patches (pasta patches/)
+    recomp.bat mods              lista os mods e pacotes de texturas (pastas mods/ e textures/)
     recomp.bat all               roda o pipeline inteiro
     recomp.bat <etapa>           roda até a etapa: ingest, patch-iso, extract, analyze, recompile, build
     recomp.bat <etapa> --force   ignora o cache da etapa
@@ -16,7 +17,7 @@ Aplicação (GUI + CLI) que leva uma ISO de PS2 até um executável nativo em C+
 ## Etapas
 
 1. **ingest** identifica a ISO (serial, executável, hashes).
-2. **patch-iso** aplica os mods xdelta ativos numa cópia da ISO.
+2. **patch-iso** aplica os patches `.xdelta` ativos numa cópia da ISO.
 3. **extract** extrai o disco para `work/<serial>/disc/`.
 4. **analyze** instala o mapa de funções do executável, que vem pronto em `games/<serial>/`.
 5. **recompile** converte o executável para C++ com `ps2_recomp`.
@@ -37,4 +38,4 @@ futuramente, `src/` com código escrito à mão para o jogo.
 
 Testes: `python -m unittest discover -s tests` (a GUI roda off-screen).
 
-Arquivos do jogo, BIOS e patches nunca entram neste repositório.
+Arquivos do jogo, BIOS, patches e mods nunca entram neste repositório.

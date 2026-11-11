@@ -13,14 +13,16 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
   `recomp-app/games/<serial>/`, reconhecido pelo SHA-1 do executável original. Quem usa o app não precisa
   mais de Ghidra nem de Java. Ghidra, extensão R5900 e JDK passam a ser opcionais na checagem de ambiente.
 - `env.toml` agora só tem padrões portáveis; caminhos da máquina vão em `env.local.toml` (não versionado).
-- GitHub Actions: os três workflows (`app`, `tools`, `guard`) viraram um só, `build`, que entrega um pacote
-  único: o app com o `ps2_recomp.exe` embutido em `recomp-app/bin/`, os mapas de funções e os fontes do runtime.
-  A release deixa de ser um zip só de ferramentas.
-- `recomp.bat` e `recomp-gui.bat` preparam o ambiente Python sozinhos na primeira execução.
+- Patches e mods agora são coisas separadas, cada um na sua pasta, como no PCSX2: `patches/` para arquivos
+  `.xdelta` e `.pnach`, `mods/` para substituição de arquivos (uma pasta por mod) e `textures/` para pacotes
+  de texturas. Basta soltar o arquivo na pasta; o `mod.toml` por item deixou de existir. O estado (ativo,
+  ordem, nome) fica em `<pasta>/<pasta>.toml`, gravado pelo app e não versionado. Na interface, as abas
+  **Patches** e **Mods** são separadas; na CLI, `recomp patches` e `recomp mods`.
 
 ### Adicionado
 - Mapa de funções do God Hand USA (`SLUS_215.03`, 62.916 entradas) em `recomp-app/games/SLUS-21503/`.
 - `recomp export-map` (desenvolvimento): gera o mapa de funções do executável original com o Ghidra.
+- Teste de consistência dos mapas de funções versionados (`tests/test_games.py`).
 - `recomp run` e botão "Executar jogo": abre o executável compilado apontando para o disco extraído,
   com a saída em `work/logs/run.log`.
 - PS2Recomp: opções `PS2X_RUNNER_SOURCE_DIR` e `PS2X_RUNNER_EXTRA_SOURCE_DIR` no CMake do runtime, para
@@ -28,6 +30,11 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
 - `env.toml`: `opt_level` e `unity_batch` para o build do código gerado.
 
 ### Corrigido
+- PS2Recomp (`ExportPS2Functions.java`): funções cujo corpo o Ghidra divide em trechos separados eram
+  exportadas com fim no endereço mais alto de qualquer trecho. No God Hand isso afetava 614 funções, que
+  passavam a cobrir 1,57 MB em vez de 239 KB; uma função de 140 bytes virava 21,7 MB de C++ e o build não
+  terminava. Agora a função acaba no trecho contíguo da entrada e os demais trechos viram entradas próprias.
+  Mapa do God Hand regenerado: o C++ gerado caiu de 454 MB para 330 MB.
 - PS2Recomp: objetos grandes (`-Wa,-mbig-obj` no MinGW, `/bigobj` no MSVC) no runner; o
   `register_functions.cpp` de um jogo inteiro passa do limite de 32 mil seções do COFF.
 

@@ -31,7 +31,9 @@ class Env:
     root: Path
     iso: Path
     work: Path
+    patches: Path
     mods: Path
+    textures: Path
     out: Path
     ps2recomp_src: Path
     ps2recomp_build: Path
@@ -81,7 +83,9 @@ def load_env(path: Path | None = None) -> Env:
         root=ROOT,
         iso=_abs(t.get("iso", "game.iso")),
         work=_abs(d.get("work", "work")),
+        patches=_abs(d.get("patches", "patches")),
         mods=_abs(d.get("mods", "mods")),
+        textures=_abs(d.get("textures", "textures")),
         out=_abs(d.get("out", "out")),
         ps2recomp_src=_abs(tools.get("ps2recomp_src", "third_party/PS2Recomp")),
         ps2recomp_build=_abs(tools.get("ps2recomp_build", "work/build/ps2recomp")),
