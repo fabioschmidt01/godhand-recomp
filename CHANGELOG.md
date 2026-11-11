@@ -6,6 +6,27 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/), 
 Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase concluída do roadmap,
 `PATCH` para correções.
 
+## [Não lançado]
+
+### Alterado
+- A etapa "Analisar ELF no Ghidra" virou "Mapa de funções do executável": o mapa vem incluído no app em
+  `recomp-app/games/<serial>/`, reconhecido pelo SHA-1 do executável original. Quem usa o app não precisa
+  mais de Ghidra nem de Java. Ghidra, extensão R5900 e JDK passam a ser opcionais na checagem de ambiente.
+- `env.toml` agora só tem padrões portáveis; caminhos da máquina vão em `env.local.toml` (não versionado).
+
+### Adicionado
+- Mapa de funções do God Hand USA (`SLUS_215.03`, 62.916 entradas) em `recomp-app/games/SLUS-21503/`.
+- `recomp export-map` (desenvolvimento): gera o mapa de funções do executável original com o Ghidra.
+- `recomp run` e botão "Executar jogo": abre o executável compilado apontando para o disco extraído,
+  com a saída em `work/logs/run.log`.
+- PS2Recomp: opções `PS2X_RUNNER_SOURCE_DIR` e `PS2X_RUNNER_EXTRA_SOURCE_DIR` no CMake do runtime, para
+  compilar o C++ gerado direto de `work/` sem copiá-lo para o repositório.
+- `env.toml`: `opt_level` e `unity_batch` para o build do código gerado.
+
+### Corrigido
+- PS2Recomp: objetos grandes (`-Wa,-mbig-obj` no MinGW, `/bigobj` no MSVC) no runner; o
+  `register_functions.cpp` de um jogo inteiro passa do limite de 32 mil seções do COFF.
+
 ## [0.1.0] - 2026-11-11
 
 ### Adicionado

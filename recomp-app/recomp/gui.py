@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from .config import load_env
 from .doctor import run_doctor
 from .mods import load_mods, save_mod
-from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, run_pipeline
+from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, StageError, run_game, run_pipeline
 
 STATUS = {
     "": ("pendente", "#8a8f98"),
@@ -80,7 +80,11 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self.cancel)
         self.ctx: Context | None = None
         top.addWidget(browse)
+        self.play_btn = QPushButton("Executar jogo")
+        self.play_btn.setToolTip("Abre o executável compilado usando o disco extraído. A saída aparece no log.")
+        self.play_btn.clicked.connect(self.play)
         top.addWidget(self.run_all)
+        top.addWidget(self.play_btn)
         top.addWidget(self.cancel_btn)
 
         # --- aba pipeline
@@ -184,7 +188,7 @@ class MainWindow(QMainWindow):
             self.iso_edit.setText(path)
 
     def set_busy(self, busy: bool) -> None:
-        for w in (self.run_all, self.doctor_btn, *self.stage_buttons):
+        for w in (self.run_all, self.play_btn, self.doctor_btn, *self.stage_buttons):
             w.setEnabled(not busy)
 
     def start(self, until: str, force: bool) -> None:
@@ -199,6 +203,26 @@ class MainWindow(QMainWindow):
         self.set_busy(True)
         self.cancel_btn.setEnabled(True)
         self.worker = Worker(lambda: self.signals.finished.emit(run_pipeline(ctx, until)))
+        self.worker.start()
+
+    def play(self) -> None:
+        if self.worker and self.worker.isRunning():
+            return
+        ctx = Context(env=self.env, iso=Path(self.iso_edit.text()), reporter=QtReporter(self.signals))
+        self.ctx = ctx
+
+        def job() -> None:
+            try:
+                code = run_game(ctx)
+                self.signals.log.emit(f"Jogo terminou com código {code}.")
+                self.signals.finished.emit(code == 0)
+            except StageError as e:
+                self.signals.log.emit(f"Não foi possível executar: {e}")
+                self.signals.finished.emit(False)
+
+        self.set_busy(True)
+        self.cancel_btn.setEnabled(True)
+        self.worker = Worker(job)
         self.worker.start()
 
     def cancel(self) -> None:

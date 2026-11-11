@@ -1,8 +1,10 @@
 """Testes do núcleo com uma ISO sintética: nenhum arquivo de jogo é necessário."""
 import dataclasses
+import hashlib
 import json
 import struct
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -131,6 +133,56 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(seen[-1][:2], ("ingest", "error"))
             self.assertIn("cancelado", seen[-1][2])
             self.assertFalse((env.work / "SLUS-21503").exists())
+
+    def _env_without_ghidra(self, tmp: Path):
+        return dataclasses.replace(load_env(), work=tmp / "work", mods=tmp / "mods", games=tmp / "games",
+                                   ghidra=tmp / "sem-ghidra")
+
+    def test_function_map_bundled_with_app_needs_no_ghidra(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            iso_path = tmp / "game.iso"
+            make_iso(iso_path, FILES)
+            env = self._env_without_ghidra(tmp)
+            gdir = env.games / "SLUS-21503"
+            gdir.mkdir(parents=True)
+            (gdir / "game.toml").write_text(f'elf_sha1 = "{hashlib.sha1(FAKE_ELF).hexdigest()}"\n', "utf-8")
+            (gdir / "functions.csv").write_text("Name,Start,End,Size\nentry,0x00100008,0x00100248,576\n", "utf-8")
+            (gdir / "recomp.toml").write_text(
+                '[general]\ninput = "@INPUT@"\noutput = "@OUTPUT@"\nghidra_output = "@GHIDRA_OUTPUT@"\nstubs = []\n', "utf-8")
+            seen: list[tuple[str, str, str]] = []
+            ctx = Context(env=env, iso=iso_path, reporter=Reporter())
+            ctx.reporter.log = lambda msg: None
+            ctx.reporter.stage = lambda key, status, detail="": seen.append((key, status, detail))
+            self.assertTrue(run_pipeline(ctx, "analyze"), seen)
+            self.assertIn("mapa incluído no app: 1 ", seen[-1][2])
+            with open(ctx.gen / "config.toml", "rb") as f:
+                general = tomllib.load(f)["general"]
+            self.assertEqual(Path(general["input"]), ctx.elf)
+            self.assertEqual(Path(general["output"]), ctx.gen / "output")
+            self.assertEqual(Path(general["ghidra_output"]), ctx.gen / "functions.csv")
+            self.assertEqual(general["stubs"], [])
+            self.assertEqual((ctx.gen / "functions.csv").read_text("utf-8"), (gdir / "functions.csv").read_text("utf-8"))
+
+    def test_unknown_executable_without_ghidra_explains_what_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            iso_path = tmp / "game.iso"
+            make_iso(iso_path, FILES)
+            env = self._env_without_ghidra(tmp)
+            gdir = env.games / "SLUS-21503"  # mapa de outra versão do executável: não pode ser usado
+            gdir.mkdir(parents=True)
+            (gdir / "game.toml").write_text('elf_sha1 = "0000"\n', "utf-8")
+            (gdir / "functions.csv").write_text("Name,Start,End,Size\n", "utf-8")
+            (gdir / "recomp.toml").write_text('input = ""\noutput = ""\nghidra_output = ""\n', "utf-8")
+            seen: list[tuple[str, str, str]] = []
+            ctx = Context(env=env, iso=iso_path, reporter=Reporter())
+            ctx.reporter.log = lambda msg: None
+            ctx.reporter.stage = lambda key, status, detail="": seen.append((key, status, detail))
+            self.assertFalse(run_pipeline(ctx, "analyze"))
+            self.assertEqual(seen[-1][:2], ("analyze", "error"))
+            self.assertIn("não tem mapa de funções", seen[-1][2])
+            self.assertFalse((ctx.gen / "config.toml").exists())
 
     def test_pcsx2_crc_is_xor_of_words(self):
         self.assertEqual(pcsx2_crc(struct.pack("<III", 0x11111111, 0x22222222, 0x44444444)), "77777777")

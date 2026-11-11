@@ -1,0 +1,9 @@
+# Gerado por "recomp export-map". Identifica o executável ao qual o mapa de funções pertence.
+serial = "SLUS-21503"
+elf = "SLUS_215.03"
+elf_sha1 = "b3ab71dfca85cc5fd9336404da93f0c0c2e811e6"
+elf_crc_pcsx2 = "6FB69282"
+entry = "0x00100008"
+entries = 62916
+ghidra = "ghidra_12.1.4_PUBLIC"
+export_script_sha1 = "e7eb7f61632d997111820897661f10d43d74306b"

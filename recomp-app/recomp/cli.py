@@ -9,13 +9,14 @@ from . import __version__
 from .config import load_env
 from .doctor import run_doctor
 from .mods import load_mods
-from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, run_pipeline
+from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, StageError, export_map, run_game, run_pipeline
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="recomp", description="Recomp estático de PS2: ISO -> C++ -> exe nativo")
-    ap.add_argument("command", choices=["gui", "doctor", "mods", "all", *[k.replace("_", "-") for k in STAGE_KEYS]],
-                    help="gui abre a interface; all roda o pipeline inteiro; uma etapa roda até ela")
+    ap.add_argument("command", choices=["gui", "doctor", "mods", "all", "run", "export-map", *[k.replace("_", "-") for k in STAGE_KEYS]],
+                    help="gui abre a interface; all roda o pipeline inteiro; uma etapa roda até ela; run executa o jogo; export-map (desenvolvimento) gera o mapa de funções com o Ghidra")
+    ap.add_argument("--seconds", type=float, help="com run: encerra o jogo após esse tempo")
     ap.add_argument("--version", action="version", version=f"recomp {__version__}")
     ap.add_argument("--iso", type=Path, help="ISO do jogo (padrão: a de env.toml)")
     ap.add_argument("--force", action="store_true", help="ignora o cache da etapa pedida")
@@ -42,6 +43,25 @@ def main(argv: list[str] | None = None) -> int:
             state = "ativo" if m.enabled else "desligado"
             note = "" if m.applied else "  (tipo ainda não aplicado pelo pipeline)"
             print(f"{m.order:4} {state:9} {m.type:8} {m.id:20} {m.name}{note}")
+        return 0
+
+    if args.command == "run":
+        ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())
+        try:
+            code = run_game(ctx, args.seconds)
+        except StageError as e:
+            print(f"erro: {e}")
+            return 1
+        print("jogo encerrado pelo limite de tempo" if code is None else f"jogo terminou com código {code}")
+        return 0 if code in (None, 0) else 1
+
+    if args.command == "export-map":
+        ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())
+        try:
+            print(export_map(ctx))
+        except StageError as e:
+            print(f"erro: {e}")
+            return 1
         return 0
 
     until = "build" if args.command == "all" else args.command.replace("-", "_")

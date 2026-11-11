@@ -41,6 +41,7 @@ def _path(name: str, p: Path, required: bool = True, hint: str = "") -> Check:
 def run_doctor(env: Env) -> list[Check]:
     ext = env.ghidra / "Ghidra" / "Extensions" / "ghidra-emotionengine-reloaded"
     free = shutil.disk_usage(env.root).free / 1e9
+    maps = sorted(d.name for d in env.games.glob("*") if (d / "functions.csv").is_file()) if env.games.is_dir() else []
     return [
         _cmd(env, "git", ["--version"]),
         _cmd(env, "cmake", ["--version"]),
@@ -48,9 +49,10 @@ def run_doctor(env: Env) -> list[Check]:
         _cmd(env, "g++", ["--version"]),
         _cmd(env, "ccache", ["--version"], required=False),
         _path("ISO do jogo", env.iso),
-        _path("Ghidra headless", env.ghidra_headless),
-        _path("Ghidra: extensão R5900 (PS2)", ext, hint="ghidra-emotionengine-reloaded"),
-        _path("JDK 21 (JAVA_HOME do pipeline)", env.java_home / "bin" / "java.exe"),
+        Check("Mapas de funções incluídos no app", bool(maps), ", ".join(maps) if maps else f"nenhum em {env.games}"),
+        _path("Ghidra headless (só desenvolvimento)", env.ghidra_headless, required=False),
+        _path("Ghidra: extensão R5900 (só desenvolvimento)", ext, required=False, hint="ghidra-emotionengine-reloaded"),
+        _path("JDK 21 (só desenvolvimento)", env.java_home / "bin" / "java.exe", required=False),
         _path("xdelta3", env.xdelta3),
         _path("PS2Recomp (código)", env.ps2recomp_src / "CMakeLists.txt"),
         _path("ps2_recomp.exe", env.ps2_recomp_exe, hint="compilar o PS2Recomp"),

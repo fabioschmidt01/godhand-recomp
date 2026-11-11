@@ -8,6 +8,8 @@ import re
 import shutil
 import struct
 import subprocess
+import threading
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -129,8 +131,10 @@ def pcsx2_crc(elf: bytes) -> str:
 
 def tool_env(env: Env) -> dict:
     e = dict(os.environ)
-    e["JAVA_HOME"] = str(env.java_home)
-    e["PATH"] = os.pathsep.join([str(env.java_home / "bin"), str(env.mingw_bin), e.get("PATH", "")])
+    extra = [d for d in (env.java_home / "bin", env.mingw_bin) if d.is_dir()]  # só o que está configurado
+    if (env.java_home / "bin").is_dir():
+        e["JAVA_HOME"] = str(env.java_home)
+    e["PATH"] = os.pathsep.join([*map(str, extra), e.get("PATH", "")])
     e["CCACHE_DIR"] = str(env.ccache_dir)
     return e
 
@@ -246,29 +250,115 @@ def extract(ctx: Context) -> str:
     return f"{len(files)} arquivos, {total / 1e6:.0f} MB"
 
 
-def analyze(ctx: Context) -> str:
+def _run_ghidra(ctx: Context, stage: str, elf: Path, project: Path, toml: Path, csv: Path) -> None:
+    """Uso de desenvolvimento: analisa o ELF no Ghidra (linguagem R5900) e exporta o mapa de funções."""
     script = ctx.env.ghidra_script_dir / "ExportPS2Functions.java"
-    toml, csv = ctx.gen / "config.toml", ctx.gen / "functions.csv"
-    key = key_of(sha1_file(ctx.elf), sha1_file(script), ctx.env.ghidra.name)
-    if toml.is_file() and csv.is_file() and ctx.is_cached("analyze", key):
-        return "cache"
     if not ctx.env.ghidra_headless.is_file():
         raise StageError(f"Ghidra headless não encontrado em {ctx.env.ghidra_headless}")
-    ctx.gen.mkdir(parents=True, exist_ok=True)
-    project = ctx.workdir / "ghidra"
     project.mkdir(parents=True, exist_ok=True)
+    toml.parent.mkdir(parents=True, exist_ok=True)
     ctx.reporter.log("Análise do Ghidra: leva vários minutos.")
-    run_tool(ctx, "analyze", [
-        str(ctx.env.ghidra_headless), str(project), "game", "-import", str(ctx.elf), "-overwrite",
+    run_tool(ctx, stage, [
+        str(ctx.env.ghidra_headless), str(project), "game", "-import", str(elf), "-overwrite",
         "-processor", "r5900:LE:32:default",
         "-scriptPath", str(ctx.env.ghidra_script_dir),
         "-postScript", script.name, str(toml), str(csv),
     ])
     if not (toml.is_file() and csv.is_file()):
-        raise StageError("o Ghidra terminou sem gerar config.toml/functions.csv (ver work/logs/analyze.log)")
+        raise StageError(f"o Ghidra terminou sem gerar o mapa (ver work/logs/{stage}.log)")
+
+
+_PATH_KEYS = ("input", "output", "ghidra_output")
+
+
+def _set_config_paths(text: str, values: dict[str, str]) -> str:
+    """Troca os caminhos de um TOML do ps2_recomp (chaves input/output/ghidra_output)."""
+    for key in _PATH_KEYS:
+        text, n = re.subn(rf"(?m)^{key}\s*=.*$", lambda m, k=key: f"{k} = {json.dumps(values[k])}", text, count=1)
+        if n != 1:
+            raise StageError(f"TOML do recompilador sem a chave {key}")
+    return text
+
+
+def bundled_map(ctx: Context) -> Path | None:
+    """Pasta do mapa de funções incluído no app para este executável, se houver."""
+    d = ctx.env.games / ctx.game["serial"]
+    meta = d / "game.toml"
+    if not (meta.is_file() and (d / "functions.csv").is_file() and (d / "recomp.toml").is_file()):
+        return None
+    with open(meta, "rb") as f:
+        return d if tomllib.load(f).get("elf_sha1") == ctx.game["elf_sha1"] else None
+
+
+def _count_rows(csv: Path) -> int:
+    with open(csv, encoding="utf-8", errors="replace") as f:
+        return sum(1 for _ in f) - 1
+
+
+def analyze(ctx: Context) -> str:
+    """Instala o mapa de funções do executável em gen/.
+
+    O mapa vem pronto dentro do app (games/<serial>/), gerado uma vez no desenvolvimento com
+    `recomp export-map`. Vale também para o ELF com patches, que trocam bytes sem mudar o layout.
+    O Ghidra só é chamado aqui como recurso de desenvolvimento, quando não há mapa incluído.
+    """
+    toml, csv = ctx.gen / "config.toml", ctx.gen / "functions.csv"
+    paths = {"input": ctx.elf.as_posix(), "output": (ctx.gen / "output").as_posix(), "ghidra_output": csv.as_posix()}
+    d = bundled_map(ctx)
+    if d is not None:
+        key = key_of("bundled", sha1_file(d / "functions.csv"), sha1_file(d / "recomp.toml"), *paths.values())
+        if toml.is_file() and csv.is_file() and ctx.is_cached("analyze", key):
+            return "cache"
+        ctx.gen.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(d / "functions.csv", csv)
+        toml.write_text(_set_config_paths((d / "recomp.toml").read_text("utf-8"), paths), "utf-8")
+        ctx.mark("analyze", key)
+        return f"mapa incluído no app: {_count_rows(csv)} funções/entradas"
+
+    if not ctx.env.ghidra_headless.is_file():
+        raise StageError(
+            f"o app não tem mapa de funções para este executável ({ctx.game['serial']}, "
+            f"SHA-1 {ctx.game['elf_sha1'][:12]}). O mapa é gerado no desenvolvimento com 'recomp export-map'.")
+    script = ctx.env.ghidra_script_dir / "ExportPS2Functions.java"
+    key = key_of("ghidra", sha1_file(ctx.elf), sha1_file(script), ctx.env.ghidra.name)
+    if toml.is_file() and csv.is_file() and ctx.is_cached("analyze", key):
+        return "cache"
+    _run_ghidra(ctx, "analyze", ctx.elf, ctx.workdir / "ghidra", toml, csv)
+    toml.write_text(_set_config_paths(toml.read_text("utf-8"), paths), "utf-8")
     ctx.mark("analyze", key)
-    n = sum(1 for _ in open(csv, encoding="utf-8", errors="replace")) - 1
-    return f"{n} funções/entradas exportadas"
+    return f"sem mapa incluído; analisado no Ghidra (desenvolvimento): {_count_rows(csv)} funções/entradas"
+
+
+def export_map(ctx: Context) -> str:
+    """Desenvolvimento: gera com o Ghidra o mapa de funções do ELF ORIGINAL da ISO e grava em games/<serial>/."""
+    ingest(ctx)
+    mdir = ctx.workdir / "map"
+    mdir.mkdir(parents=True, exist_ok=True)
+    elf = mdir / ctx.game["elf"]
+    with IsoReader(ctx.iso) as iso:
+        elf.write_bytes(iso.read(ctx.game["elf"]))
+    toml, csv = mdir / "config.toml", mdir / "functions.csv"
+    _run_ghidra(ctx, "export-map", elf, mdir / "ghidra", toml, csv)
+    d = ctx.env.games / ctx.game["serial"]
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(csv, d / "functions.csv")
+    template = _set_config_paths(toml.read_text("utf-8"), {k: f"@{k.upper()}@" for k in _PATH_KEYS})
+    (d / "recomp.toml").write_text(template, "utf-8")
+    script = ctx.env.ghidra_script_dir / "ExportPS2Functions.java"
+    g = ctx.game
+    meta = [
+        '# Gerado por "recomp export-map". Identifica o executável ao qual o mapa de funções pertence.',
+        f'serial = "{g["serial"]}"',
+        f'elf = "{g["elf"]}"',
+        f'elf_sha1 = "{g["elf_sha1"]}"',
+        f'elf_crc_pcsx2 = "{g["elf_crc_pcsx2"]}"',
+        f'entry = "{g["entry"]}"',
+        f"entries = {_count_rows(csv)}",
+        f'ghidra = "{ctx.env.ghidra.name}"',
+        f'export_script_sha1 = "{sha1_file(script)}"',
+    ]
+    (d / "game.toml").write_text("\n".join(meta) + "\n", "utf-8")
+    return f"mapa de {g['serial']} gravado em {d} ({_count_rows(csv)} funções/entradas)"
 
 
 def recompile(ctx: Context) -> str:
@@ -291,36 +381,23 @@ def recompile(ctx: Context) -> str:
 
 
 def build(ctx: Context) -> str:
-    """Copia o C++ gerado para o runner do PS2Recomp (fluxo oficial do projeto) e compila ps2EntryRunner."""
+    """Compila ps2EntryRunner com o C++ gerado lido direto de work/ (nada é copiado para o repositório)."""
     out = ctx.gen / "output"
-    runtime = ctx.env.ps2recomp_src / "ps2xRuntime"
-    runner, include = runtime / "src" / "runner", runtime / "include"
-    sources = sorted(out.glob("*.cpp"))
-    if not sources:
+    if not any(out.glob("*.cpp")):
         raise StageError("nada para compilar: rode a etapa de conversão antes")
-    manifest = runner / ".recomp-generated.json"
-    old = json.loads(manifest.read_text("utf-8")) if manifest.is_file() else []
-    for rel in old:  # remove o que uma geração anterior deixou
-        (runtime / rel).unlink(missing_ok=True)
-    new: list[str] = []
-    for f in out.iterdir():
-        if f.suffix == ".cpp":
-            dest = runner / f.name
-        elif f.suffix in (".h", ".hpp"):
-            dest = include / f.name
-        else:
-            continue
-        if not dest.is_file() or dest.read_bytes() != f.read_bytes():
-            shutil.copyfile(f, dest)  # só toca no que mudou, para o Ninja não recompilar tudo
-        new.append(str(dest.relative_to(runtime)).replace("\\", "/"))
-    manifest.write_text(json.dumps(new), "utf-8")
+    extra = ctx.env.games / ctx.game["serial"] / "src"  # fontes escritos à mão para o jogo (overrides)
 
     bdir = ctx.workdir / "build"
     if not (bdir / "build.ninja").is_file() or "build" in ctx.force:
+        opt = f"{ctx.env.opt_level} -DNDEBUG"
         run_tool(ctx, "build-configure", [
             "cmake", "-S", str(ctx.env.ps2recomp_src), "-B", str(bdir), "-G", "Ninja",
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -DNDEBUG",
-            "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -DNDEBUG",
+            # RelWithDebInfo sem -g: o modo Release do PS2Recomp liga LTO, inviável com este volume de código.
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO={opt}",
+            f"-DCMAKE_C_FLAGS_RELWITHDEBINFO={opt}",
+            f"-DPS2X_RUNNER_SOURCE_DIR={out.as_posix()}",
+            f"-DPS2X_RUNNER_EXTRA_SOURCE_DIR={extra.as_posix() if extra.is_dir() else ''}",
+            f"-DPS2X_RUNNER_UNITY_BUILD_BATCH_SIZE={ctx.env.unity_batch}",
             "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
             f"-DCMAKE_C_FLAGS={ctx.env.cxx_flags}", f"-DCMAKE_CXX_FLAGS={ctx.env.cxx_flags}",
             "-DCMAKE_C_COMPILER_LAUNCHER=ccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
@@ -338,11 +415,63 @@ def build(ctx: Context) -> str:
     return f"{dest / 'game.exe'} ({exe.stat().st_size / 1e6:.0f} MB)"
 
 
+def run_game(ctx: Context, seconds: float | None = None, max_log_bytes: int = 200 << 20) -> int | None:
+    """Executa o jogo compilado apontando para o disco extraído.
+
+    A saída vai para a interface e para work/logs/run.log (limitado, pois o runtime é muito verboso).
+    Com `seconds`, encerra o processo após esse tempo e devolve None; senão devolve o código de saída.
+    """
+    if not ctx.game:
+        ingest(ctx)
+    exe = ctx.env.out / ctx.game["serial"] / "game.exe"
+    elf = ctx.workdir / "disc" / ctx.game["elf"]
+    if not exe.is_file():
+        raise StageError(f"executável ainda não compilado: {exe}")
+    if not elf.is_file():
+        raise StageError(f"disco não extraído: {elf}")
+    logs = ctx.env.work / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    ctx.reporter.log(f'> "{exe}" "{elf}"')
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    p = subprocess.Popen([str(exe), str(elf)], cwd=exe.parent, env=tool_env(ctx.env), stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=flags)
+    ctx.current_proc = p
+    timed_out = False
+
+    def on_timeout() -> None:
+        nonlocal timed_out
+        timed_out = True
+        ctx.cancel()
+
+    timer = threading.Timer(seconds, on_timeout) if seconds else None
+    if timer:
+        timer.start()
+    written = 0
+    try:
+        with open(logs / "run.log", "w", encoding="utf-8", errors="replace") as logf:
+            assert p.stdout is not None
+            for line in p.stdout:
+                if written < max_log_bytes:
+                    logf.write(line)
+                    written += len(line)
+                    ctx.reporter.log(line.rstrip())
+        code = p.wait()
+    finally:
+        if timer:
+            timer.cancel()
+        ctx.current_proc = None
+    if timed_out:
+        ctx.cancelled = False
+        ctx.reporter.log(f"Encerrado após {seconds:.0f} s (limite pedido).")
+        return None
+    return code
+
+
 STAGES: list[tuple[str, str, Callable[[Context], str]]] = [
     ("ingest", "Identificar ISO", ingest),
     ("patch_iso", "Aplicar patches xdelta", patch_iso),
     ("extract", "Extrair disco", extract),
-    ("analyze", "Analisar ELF no Ghidra", analyze),
+    ("analyze", "Mapa de funções do executável", analyze),
     ("recompile", "Converter para C++", recompile),
     ("build", "Compilar executável", build),
 ]

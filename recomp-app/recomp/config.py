@@ -9,9 +9,21 @@ APP_DIR = Path(__file__).resolve().parent.parent
 ROOT = APP_DIR.parent
 
 
+UNSET = ROOT / ".nao-configurado"  # caminho que nunca existe: ferramenta opcional sem caminho definido
+
+
 def _abs(value: str) -> Path:
+    if not value:
+        return UNSET
     p = Path(value)
     return p if p.is_absolute() else ROOT / p
+
+
+def _merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
 
 
 @dataclass
@@ -32,6 +44,9 @@ class Env:
     jobs: int
     cxx_flags: str
     ccache_dir: Path
+    opt_level: str
+    unity_batch: int
+    games: Path  # metadados por jogo incluídos no app (mapa de funções, overrides)
 
     @property
     def ps2_recomp_exe(self) -> Path:
@@ -51,8 +66,14 @@ class Env:
 
 
 def load_env(path: Path | None = None) -> Env:
-    with open(path or APP_DIR / "env.toml", "rb") as f:
+    """Lê env.toml (versionado, padrões portáveis) e sobrepõe env.local.toml (caminhos desta máquina)."""
+    path = path or APP_DIR / "env.toml"
+    with open(path, "rb") as f:
         t = tomllib.load(f)
+    local = path.with_name("env.local.toml")
+    if local.is_file():
+        with open(local, "rb") as f:
+            t = _merge(t, tomllib.load(f))
     d, tools, b = t.get("dirs", {}), t.get("tools", {}), t.get("build", {})
     return Env(
         root=ROOT,
@@ -71,4 +92,7 @@ def load_env(path: Path | None = None) -> Env:
         jobs=int(b.get("jobs", 8)),
         cxx_flags=str(b.get("cxx_flags", "-msse4.1")),
         ccache_dir=_abs(b.get("ccache_dir", "work/ccache")),
+        opt_level=str(b.get("opt_level", "-O1")),
+        unity_batch=int(b.get("unity_batch", 32)),
+        games=APP_DIR / "games",
     )
