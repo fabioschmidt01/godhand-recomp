@@ -437,11 +437,25 @@ target_sources(ps2_runtime PRIVATE
     ${KERNEL_SRC_FILES}
 )
 
+# godhand-recomp: the recompiled game sources can live outside the source tree
+# (e.g. a per-game work folder), so generated code never has to be copied into the repo.
+set(PS2X_RUNNER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/runner" CACHE PATH
+    "Directory with the recompiled game sources (*.cpp) and generated headers")
+set(PS2X_RUNNER_EXTRA_SOURCE_DIR "" CACHE PATH
+    "Optional extra directory with hand-written sources (*.cpp) for the game, e.g. game overrides")
+
 file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/*.cpp"
+    "${PS2X_RUNNER_SOURCE_DIR}/*.cpp"
 )
 
-set(RUNNER_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/main.cpp")
+if(PS2X_RUNNER_EXTRA_SOURCE_DIR)
+    file(GLOB RUNNER_EXTRA_SRC_FILES CONFIGURE_DEPENDS
+        "${PS2X_RUNNER_EXTRA_SOURCE_DIR}/*.cpp"
+    )
+    list(APPEND RUNNER_SRC_FILES ${RUNNER_EXTRA_SRC_FILES})
+endif()
+
+set(RUNNER_MAIN_CPP "${PS2X_RUNNER_SOURCE_DIR}/main.cpp")
 set(ROOT_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
 if(EXISTS "${RUNNER_MAIN_CPP}")
@@ -462,6 +476,8 @@ else()
     )
 endif()
 
+target_include_directories(ps2EntryRunner PRIVATE "${PS2X_RUNNER_SOURCE_DIR}")
+
 if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
     set_target_properties(ps2EntryRunner PROPERTIES
         UNITY_BUILD ON
@@ -477,7 +493,9 @@ if(PS2X_ENABLE_RUNNER_PCH)
 
     foreach(PS2X_RUNNER_GENERATED_HEADER IN ITEMS
         "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_functions.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_stubs.h")
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_stubs.h"
+        "${PS2X_RUNNER_SOURCE_DIR}/ps2_recompiled_functions.h"
+        "${PS2X_RUNNER_SOURCE_DIR}/ps2_recompiled_stubs.h")
         if(EXISTS "${PS2X_RUNNER_GENERATED_HEADER}")
             list(APPEND PS2X_RUNNER_PCH_HEADERS "${PS2X_RUNNER_GENERATED_HEADER}")
         endif()
@@ -498,7 +516,10 @@ if(PS2X_DEFAULT_BOOT_ELF_DEFINE)
 endif()
 
 if(MSVC)
-    target_compile_options(ps2EntryRunner PRIVATE /FS)
+    target_compile_options(ps2EntryRunner PRIVATE /FS /bigobj)
+elseif(MINGW)
+    # A full game's register_functions.cpp exceeds the 32k-section limit of plain COFF objects.
+    target_compile_options(ps2EntryRunner PRIVATE -Wa,-mbig-obj)
 endif()
 
 target_include_directories(ps2_runtime PUBLIC
