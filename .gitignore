@@ -1,0 +1,31 @@
+# Lista branca: tudo na raiz é ignorado, exceto o que está liberado abaixo.
+# ISO, BIOS, dados extraídos, código gerado a partir do jogo e builds nunca entram no repositório.
+/*
+!/.gitignore
+!/.github/
+!/README.md
+!/CHANGELOG.md
+!/recomp-app/
+!/third_party/
+!/mods/
+
+# De cada mod só o manifesto é versionado; o conteúdo do patch fica local.
+/mods/*/*
+!/mods/*/mod.toml
+
+# Reforço, caso algum arquivo do jogo seja copiado para uma pasta liberada.
+*.iso
+*.ISO
+*.afs
+*.AFS
+*.xdelta
+*.pnach
+*.ROM0
+*.ROM1
+*.NVM
+*.MEC
+*.DIFF
+SLUS_*
+SLES_*
+SLPM_*
+SCUS_*
