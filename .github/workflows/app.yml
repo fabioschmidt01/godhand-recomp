@@ -45,15 +45,12 @@ jobs:
       - name: Compila os módulos
         run: python -m compileall -q recomp
 
-      - name: Testes
+      - name: Testes (núcleo e GUI off-screen)
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
       - name: CLI
         run: |
           python -m recomp --version
           python -m recomp mods
-
-      - name: GUI abre (off-screen)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -c "from PySide6.QtWidgets import QApplication; from recomp.gui import MainWindow; a = QApplication([]); w = MainWindow(); w.show(); a.processEvents(); print('gui ok')"

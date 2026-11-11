@@ -42,6 +42,23 @@ class Context:
     force: set[str] = field(default_factory=set)
     game: dict = field(default_factory=dict)
     effective_iso: Path | None = None
+    cancelled: bool = False
+    current_proc: subprocess.Popen | None = None
+
+    def cancel(self) -> None:
+        """Pede a interrupção: mata o processo externo em execução (e seus filhos) e aborta a etapa."""
+        self.cancelled = True
+        p = self.current_proc
+        if p is not None and p.poll() is None:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                p.kill()
+
+    def check_cancelled(self) -> None:
+        if self.cancelled:
+            raise StageError("cancelado pelo usuário")
 
     @property
     def workdir(self) -> Path:
@@ -129,11 +146,14 @@ def run_tool(ctx: Context, stage: str, cmd: list[str], cwd: Path | None = None) 
             cmd, cwd=cwd, env=tool_env(ctx.env), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", creationflags=flags,
         )
+        ctx.current_proc = p
         assert p.stdout is not None
         for line in p.stdout:
             logf.write(line)
             ctx.reporter.log(line.rstrip())
         code = p.wait()
+        ctx.current_proc = None
+    ctx.check_cancelled()
     if code != 0:
         raise StageError(f"{Path(cmd[0]).name} terminou com código {code} (log: {logs / (stage + '.log')})")
 
@@ -211,6 +231,7 @@ def extract(ctx: Context) -> str:
 
         def on_bytes(n: int) -> None:
             nonlocal done
+            ctx.check_cancelled()
             done += n
             ctx.reporter.progress("extract", done / total)
 
@@ -335,6 +356,7 @@ def run_pipeline(ctx: Context, until: str = "build") -> bool:
     for key, _title, fn in STAGES:
         ctx.reporter.stage(key, "running")
         try:
+            ctx.check_cancelled()
             detail = fn(ctx)
         except StageError as e:
             ctx.reporter.stage(key, "error", str(e))

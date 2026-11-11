@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
+    QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -75,8 +75,13 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         top.addWidget(QLabel("ISO do jogo:"))
         top.addWidget(self.iso_edit, 1)
+        self.cancel_btn = QPushButton("Cancelar")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.cancel)
+        self.ctx: Context | None = None
         top.addWidget(browse)
         top.addWidget(self.run_all)
+        top.addWidget(self.cancel_btn)
 
         # --- aba pipeline
         self.stage_table = QTableWidget(len(STAGES), 4)
@@ -190,9 +195,31 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         ctx = Context(env=self.env, iso=Path(self.iso_edit.text()), reporter=QtReporter(self.signals),
                       force={until} if force else set())
+        self.ctx = ctx
         self.set_busy(True)
+        self.cancel_btn.setEnabled(True)
         self.worker = Worker(lambda: self.signals.finished.emit(run_pipeline(ctx, until)))
         self.worker.start()
+
+    def cancel(self) -> None:
+        if self.ctx is not None and self.worker and self.worker.isRunning():
+            self.log.appendPlainText("Cancelando a etapa em execução…")
+            self.cancel_btn.setEnabled(False)
+            self.ctx.cancel()
+
+    def closeEvent(self, event) -> None:
+        """Nunca destrói a janela com uma thread viva: isso derruba o processo."""
+        if self.worker and self.worker.isRunning():
+            if self.ctx is not None:
+                answer = QMessageBox.question(
+                    self, "Pipeline em execução",
+                    "Uma etapa ainda está rodando. Fechar agora interrompe essa etapa. Fechar mesmo assim?")
+                if answer != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+                self.ctx.cancel()
+            self.worker.wait()
+        event.accept()
 
     def set_stage(self, key: str, status: str, detail: str) -> None:
         row = STAGE_KEYS.index(key)
@@ -210,6 +237,8 @@ class MainWindow(QMainWindow):
             self.log.appendPlainText(f"[{key}] {STATUS.get(status, (status,))[0]}{': ' + detail if detail else ''}")
 
     def pipeline_done(self, ok: bool) -> None:
+        self.ctx = None
+        self.cancel_btn.setEnabled(False)
         self.set_busy(False)
         self.progress.setValue(1000 if ok else 0)
         self.log.appendPlainText("Pipeline concluído." if ok else "Pipeline interrompido por erro.")

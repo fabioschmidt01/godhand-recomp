@@ -116,6 +116,22 @@ class PipelineTest(unittest.TestCase):
             self.assertFalse(run_pipeline(ctx, "extract"))
             self.assertEqual(seen[-1], ("ingest", "error"))
 
+    def test_cancel_stops_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            iso_path = tmp / "game.iso"
+            make_iso(iso_path, FILES)
+            env = dataclasses.replace(load_env(), work=tmp / "work", mods=tmp / "mods")
+            seen: list[tuple[str, str, str]] = []
+            ctx = Context(env=env, iso=iso_path, reporter=Reporter())
+            ctx.reporter.log = lambda msg: None
+            ctx.reporter.stage = lambda key, status, detail="": seen.append((key, status, detail))
+            ctx.cancel()
+            self.assertFalse(run_pipeline(ctx, "extract"))
+            self.assertEqual(seen[-1][:2], ("ingest", "error"))
+            self.assertIn("cancelado", seen[-1][2])
+            self.assertFalse((env.work / "SLUS-21503").exists())
+
     def test_pcsx2_crc_is_xor_of_words(self):
         self.assertEqual(pcsx2_crc(struct.pack("<III", 0x11111111, 0x22222222, 0x44444444)), "77777777")
 
