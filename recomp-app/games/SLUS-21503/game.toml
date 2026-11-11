@@ -6,4 +6,4 @@ elf_crc_pcsx2 = "6FB69282"
 entry = "0x00100008"
 entries = 62916
 ghidra = "ghidra_12.1.4_PUBLIC"
-export_script_sha1 = "e7eb7f61632d997111820897661f10d43d74306b"
+export_script_sha1 = "58f445be3e0c50fd788f1f6abeeba8702add2284"

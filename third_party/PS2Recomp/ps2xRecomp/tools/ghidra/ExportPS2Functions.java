@@ -3,6 +3,7 @@
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.Instruction;
@@ -269,6 +270,8 @@ public class ExportPS2Functions extends GhidraScript {
         long endExclusive;
         long size;
         boolean syntheticEntry = false;
+        // Known exclusive end for a synthetic entry (detached chunk of a non-contiguous function body).
+        long fixedEnd = 0L;
     }
 
     private static final class AddressTakenCandidate {
@@ -880,11 +883,29 @@ public class ExportPS2Functions extends GhidraScript {
         }
     }
 
-    private List<FunctionRecord> collectExecutableLabelRecords(List<FunctionRecord> functionRecords) {
+    private List<FunctionRecord> collectExecutableLabelRecords(List<FunctionRecord> functionRecords, List<long[]> detachedChunks) {
         List<FunctionRecord> labelRecords = new ArrayList<>();
         Set<Long> existingStarts = new HashSet<>();
         for (FunctionRecord record : functionRecords) {
             existingStarts.add(record.start);
+        }
+
+        // Pieces of non-contiguous function bodies become their own entries, so the owner
+        // function no longer has to span everything between its entry and its farthest chunk.
+        List<FunctionRecord> chunkRecords = new ArrayList<>();
+        for (long[] chunk : detachedChunks) {
+            long start = chunk[0];
+            if (!existingStarts.add(start)) {
+                continue;
+            }
+
+            FunctionRecord record = new FunctionRecord();
+            record.name = makeAnonymousEntryName(start);
+            record.start = start;
+            record.syntheticEntry = true;
+            record.fixedEnd = chunk[1];
+            labelRecords.add(record);
+            chunkRecords.add(record);
         }
 
         SymbolIterator symbols = currentProgram.getSymbolTable().getSymbolIterator(true);
@@ -979,12 +1000,23 @@ public class ExportPS2Functions extends GhidraScript {
 
         functionRecords.sort(Comparator.comparingLong(r -> r.start));
         for (FunctionRecord record : labelRecords) {
-            long endExclusive = 0L;
+            long endExclusive = record.fixedEnd;
 
-            for (FunctionRecord functionRecord : functionRecords) {
-                if (record.start > functionRecord.start && record.start < functionRecord.endExclusive) {
-                    endExclusive = functionRecord.endExclusive;
-                    break;
+            if (endExclusive == 0L) {
+                for (FunctionRecord functionRecord : functionRecords) {
+                    if (record.start > functionRecord.start && record.start < functionRecord.endExclusive) {
+                        endExclusive = functionRecord.endExclusive;
+                        break;
+                    }
+                }
+            }
+
+            if (endExclusive == 0L) {
+                for (FunctionRecord chunkRecord : chunkRecords) {
+                    if (record.start > chunkRecord.start && record.start < chunkRecord.fixedEnd) {
+                        endExclusive = chunkRecord.fixedEnd;
+                        break;
+                    }
                 }
             }
 
@@ -1031,6 +1063,8 @@ public class ExportPS2Functions extends GhidraScript {
         FunctionIterator it = fm.getFunctions(true);
 
         List<FunctionRecord> functionRecords = new ArrayList<>();
+        List<long[]> detachedChunks = new ArrayList<>();
+        int nonContiguousCount = 0;
         Set<String> stubSelectors = new LinkedHashSet<>();
         Set<String> untrackedStubSelectors = new LinkedHashSet<>();
         int uncategorizedCount = 0;
@@ -1046,8 +1080,35 @@ public class ExportPS2Functions extends GhidraScript {
             FunctionRecord record = new FunctionRecord();
             record.name = func.getName();
             record.start = func.getEntryPoint().getOffset();
-            record.endExclusive = body.getMaxAddress().getOffset() + 1L;
-            record.size = body.getNumAddresses();
+
+            // A Ghidra function body can be several separate address ranges (shared tails,
+            // out-of-line blocks). The recompiler treats [start, end) as one contiguous
+            // function, so the record must end with the range that holds the entry point;
+            // using the body's highest address would swallow every function in between.
+            AddressRange entryRange = body.getRangeContaining(func.getEntryPoint());
+            if (entryRange != null) {
+                record.endExclusive = entryRange.getMaxAddress().getOffset() + 1L;
+                boolean nonContiguous = false;
+                for (AddressRange range : body) {
+                    long rangeStart = range.getMinAddress().getOffset();
+                    long rangeEnd = range.getMaxAddress().getOffset() + 1L;
+                    if (range.equals(entryRange)) {
+                        if (rangeStart < record.start) {
+                            detachedChunks.add(new long[] { rangeStart, record.start });
+                            nonContiguous = true;
+                        }
+                        continue;
+                    }
+                    detachedChunks.add(new long[] { rangeStart, rangeEnd });
+                    nonContiguous = true;
+                }
+                if (nonContiguous) {
+                    nonContiguousCount++;
+                }
+            } else {
+                record.endExclusive = Math.max(body.getMaxAddress().getOffset() + 1L, record.start + MIPS_INSTRUCTION_SIZE);
+            }
+            record.size = record.endExclusive - record.start;
             functionRecords.add(record);
 
             ClassificationResult classification = classifyFunction(func);
@@ -1061,7 +1122,7 @@ public class ExportPS2Functions extends GhidraScript {
         }
 
         final int functionCount = functionRecords.size();
-        List<FunctionRecord> labelRecords = collectExecutableLabelRecords(functionRecords);
+        List<FunctionRecord> labelRecords = collectExecutableLabelRecords(functionRecords, detachedChunks);
         List<FunctionRecord> exportRecords = new ArrayList<>(functionRecords);
         exportRecords.addAll(labelRecords);
         exportRecords.sort(Comparator.comparingLong(r -> r.start));
@@ -1131,6 +1192,7 @@ public class ExportPS2Functions extends GhidraScript {
         }
 
          println(String.format("Exported %d functions and %d executable labels to %s", functionCount, labelRecords.size(), csvFile.getAbsolutePath()));
+        println(String.format("Split %d non-contiguous function bodies into %d detached chunk(s).", nonContiguousCount, detachedChunks.size()));
 
         println(String.format("Using %d embedded runtime handler names from ps2_call_list.h snapshot.", RUNTIME_HANDLER_NAMES.size()));
         println(String.format("Exported TOML config to %s", tomlFile.getAbsolutePath()));
