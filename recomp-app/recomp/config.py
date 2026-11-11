@@ -50,7 +50,9 @@ class Env:
 
     @property
     def ps2_recomp_exe(self) -> Path:
-        return self.ps2recomp_build / "ps2xRecomp" / "ps2_recomp.exe"
+        """Recompilador: o que vem no pacote do app (bin/) ou, no desenvolvimento, o compilado em work/."""
+        bundled = APP_DIR / "bin" / "ps2_recomp.exe"
+        return bundled if bundled.is_file() else self.ps2recomp_build / "ps2xRecomp" / "ps2_recomp.exe"
 
     @property
     def ps2_analyzer_exe(self) -> Path:

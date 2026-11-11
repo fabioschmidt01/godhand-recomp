@@ -1,0 +1,129 @@
+name: build
+
+# Workflow único: confere que nada do jogo foi versionado, compila o recompilador, roda todos os
+# testes e monta UM pacote da aplicação (app + ps2_recomp.exe + fontes do runtime).
+# Em tags vX.Y.Z o pacote vira release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    name: nenhum arquivo do jogo ou patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verifica arquivos versionados
+        run: |
+          bad=$(git ls-files | grep -iE '\.(iso|cue|afs|afd|ims|xdelta|pnach|ips|bps|ppf|rom0|rom1|nvm|mec|erom|ps2|sfd)$|(^|/)(bios|work|refs|out)/|(^|/)S[CL][UEP][SM]_[0-9]{3}\.[0-9]{2}$' || true)
+          if [ -n "$bad" ]; then
+            echo "Arquivos proibidos versionados:"
+            echo "$bad"
+            exit 1
+          fi
+          big=$(git ls-files -z | xargs -0 -r stat -c '%s %n' | awk '$1 > 20000000')
+          if [ -n "$big" ]; then
+            echo "Arquivos acima de 20 MB (suspeito):"
+            echo "$big"
+            exit 1
+          fi
+          echo "ok: $(git ls-files | wc -l) arquivos versionados, nenhum proibido"
+
+  app:
+    name: aplicação (testes + pacote)
+    needs: guard
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Recompilador - configura
+        run: cmake -S third_party/PS2Recomp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS2X_BUILD_STUDIO=OFF
+
+      - name: Recompilador - compila
+        run: cmake --build build
+
+      - name: Recompilador - testes
+        working-directory: third_party/PS2Recomp
+        run: ..\..\build\ps2xTest\ps2x_tests.exe
+
+      - name: Aplicação - dependências
+        working-directory: recomp-app
+        run: pip install -r requirements.txt
+
+      - name: Aplicação - testes (núcleo e GUI off-screen)
+        working-directory: recomp-app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+      - name: Aplicação - CLI
+        working-directory: recomp-app
+        run: |
+          python -m recomp --version
+          python -m recomp mods
+
+      - name: Monta o pacote
+        shell: pwsh
+        run: |
+          $version = (python -c "import sys; sys.path.insert(0, 'recomp-app'); import recomp; print(recomp.__version__)").Trim()
+          $name = "godhand-recomp-$version-windows-x64"
+          $pkg = "dist/$name"
+          New-Item -ItemType Directory -Force "$pkg/recomp-app/bin", "$pkg/third_party" | Out-Null
+          Copy-Item README.md, CHANGELOG.md $pkg
+          Copy-Item -Recurse mods "$pkg/mods"
+          foreach ($item in 'recomp', 'games', 'env.toml', 'env.local.example.toml', 'requirements.txt', 'recomp.bat', 'recomp-gui.bat', 'README.md') {
+            Copy-Item -Recurse "recomp-app/$item" "$pkg/recomp-app/$item"
+          }
+          Get-ChildItem "$pkg/recomp-app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          Copy-Item build/ps2xRecomp/ps2_recomp.exe "$pkg/recomp-app/bin/"
+          # Fontes do runtime: necessários para compilar o executável do jogo na máquina do usuário.
+          git archive --format=tar --prefix=PS2Recomp/ HEAD:third_party/PS2Recomp | tar -x -C "$pkg/third_party"
+          "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "pacote: $name, $((Get-ChildItem $pkg -Recurse -File | Measure-Object).Count) arquivos"
+
+      - name: Pacote funciona fora do repositório
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          Set-Location "dist/$env:PACKAGE_NAME/recomp-app"
+          python -m recomp --version
+          python -m recomp doctor | Select-String -Pattern 'ps2_recomp.exe|Mapas de fun'
+          python -c "from recomp.config import load_env; e = load_env(); assert e.ps2_recomp_exe.is_file(), e.ps2_recomp_exe; assert (e.ps2recomp_src / 'ps2xRuntime' / 'CMakeLists.txt').is_file(); print('pacote ok:', e.ps2_recomp_exe)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: dist/${{ env.PACKAGE_NAME }}
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path "dist/$env:PACKAGE_NAME" -DestinationPath "$env:PACKAGE_NAME.zip"
+          gh release create "${{ github.ref_name }}" "$env:PACKAGE_NAME.zip" --title "${{ github.ref_name }}" --notes "Ver CHANGELOG.md." --verify-tag

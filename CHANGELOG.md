@@ -13,6 +13,10 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
   `recomp-app/games/<serial>/`, reconhecido pelo SHA-1 do executável original. Quem usa o app não precisa
   mais de Ghidra nem de Java. Ghidra, extensão R5900 e JDK passam a ser opcionais na checagem de ambiente.
 - `env.toml` agora só tem padrões portáveis; caminhos da máquina vão em `env.local.toml` (não versionado).
+- GitHub Actions: os três workflows (`app`, `tools`, `guard`) viraram um só, `build`, que entrega um pacote
+  único: o app com o `ps2_recomp.exe` embutido em `recomp-app/bin/`, os mapas de funções e os fontes do runtime.
+  A release deixa de ser um zip só de ferramentas.
+- `recomp.bat` e `recomp-gui.bat` preparam o ambiente Python sozinhos na primeira execução.
 
 ### Adicionado
 - Mapa de funções do God Hand USA (`SLUS_215.03`, 62.916 entradas) em `recomp-app/games/SLUS-21503/`.
