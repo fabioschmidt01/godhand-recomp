@@ -329,8 +329,101 @@ def analyze(ctx: Context) -> str:
     return f"sem mapa incluído; analisado no Ghidra (desenvolvimento): {_count_rows(csv)} funções/entradas"
 
 
-def export_map(ctx: Context) -> str:
-    """Desenvolvimento: gera com o Ghidra o mapa de funções do ELF ORIGINAL da ISO e grava em games/<serial>/."""
+def _stub_address(selector: str) -> int:
+    return int(selector.rsplit("@", 1)[1], 16)
+
+
+def _merge_sdk_stubs(template: str, sdk_toml: Path, manual_toml: Path | None = None) -> tuple[str, int, int, int]:
+    """Junta ao TOML do Ghidra as funções do SDK que o ps2_analyzer reconhece por assinatura.
+
+    O script do Ghidra só encontra os wrappers de chamada de sistema. Sem o resto do SDK ligado às
+    implementações nativas do runtime, o jogo fica rodando o código original do SDK e trava, por
+    exemplo, esperando o IOP responder em sceSifInitRpc.
+    """
+    with open(sdk_toml, "rb") as f:
+        sdk = [x for x in tomllib.load(f)["general"].get("stubs", []) if "@" in x]
+    base = [x for x in tomllib.loads(template)["general"].get("stubs", []) if "@" in x]
+    taken = {_stub_address(x) for x in base}
+    added = [x for x in sdk if _stub_address(x) not in taken]  # no mesmo endereço, vale o do Ghidra
+    # Ligações feitas à mão (engenharia reversa) têm a última palavra sobre as automáticas.
+    manual: list[str] = []
+    if manual_toml is not None and manual_toml.is_file():
+        with open(manual_toml, "rb") as f:
+            manual = [x for x in tomllib.load(f).get("stubs", []) if "@" in x]
+    overridden = {_stub_address(x) for x in manual}
+    merged = sorted([x for x in base + added if _stub_address(x) not in overridden] + manual, key=_stub_address)
+    block = "stubs = [\n" + "".join(f"  {json.dumps(x)},\n" for x in merged) + "]"
+    text, n = re.subn(r"(?ms)^stubs\s*=\s*\[.*?^\]", lambda m: block, template, count=1)
+    if n != 1:
+        raise StageError("TOML do recompilador sem a lista stubs")
+    return text, len(base), len(added), len(manual)
+
+
+JR_RA = 0x03E00008
+DATA_ENTRY_MIN_SIZE = 1024
+
+
+def elf_code_section(elf: bytes) -> tuple[int, int]:
+    """Faixa [início, fim) da seção executável que contém o ponto de entrada do ELF (a .text)."""
+    entry, = struct.unpack_from("<I", elf, 24)
+    shoff, = struct.unpack_from("<I", elf, 32)
+    shnum, = struct.unpack_from("<H", elf, 48)
+    for i in range(shnum):
+        _name, _type, flags, addr, _off, size = struct.unpack_from("<IIIIII", elf, shoff + i * 40)
+        if flags & 4 and addr <= entry < addr + size:
+            return addr, addr + size
+    raise StageError("ELF sem seção executável contendo o ponto de entrada")
+
+
+def _elf_word_reader(elf: bytes) -> Callable[[int], int | None]:
+    """Devolve uma função que lê a palavra de 32 bits de um endereço virtual (None se não estiver no arquivo)."""
+    phoff, = struct.unpack_from("<I", elf, 28)
+    phnum, = struct.unpack_from("<H", elf, 44)
+    segments = []
+    for i in range(phnum):
+        p_type, p_offset, p_vaddr, _paddr, p_filesz = struct.unpack_from("<IIIII", elf, phoff + i * 32)
+        if p_type == 1:
+            segments.append((p_vaddr, p_vaddr + p_filesz, p_offset))
+
+    def word(addr: int) -> int | None:
+        for start, end, offset in segments:
+            if start <= addr and addr + 4 <= end:
+                return struct.unpack_from("<I", elf, offset + addr - start)[0]
+        return None
+
+    return word
+
+
+def drop_data_entries(rows: list[list[str]], elf: bytes) -> tuple[list[list[str]], list[str]]:
+    """Remove do mapa entradas sintéticas que são tabelas de dados, não código.
+
+    O Ghidra marca como executável tudo o que o ELF declara assim, e o exportador cria entradas
+    `entry_*` para rótulos referenciados. Fora da .text isso inclui tabelas de dados enormes, que o
+    recompilador traduziria como se fossem instruções. Código de verdade fora da .text existe (rotinas
+    que o SDK copia para o kernel), então o critério é o conteúdo: uma entrada `entry_*` fora da
+    .text, com 1 KB ou mais e sem nenhum `jr $ra`, é dado.
+    Cada linha é [nome, início, fim, tamanho]. Devolve (linhas mantidas, nomes removidos).
+    """
+    text_start, text_end = elf_code_section(elf)
+    word = _elf_word_reader(elf)
+    kept, dropped = [], []
+    for row in rows:
+        name, start, end = row[0], int(row[1], 16), int(row[2], 16)
+        outside = not (text_start <= start < text_end)
+        if outside and name.startswith("entry_") and end - start >= DATA_ENTRY_MIN_SIZE:
+            if not any(word(a) == JR_RA for a in range(start, end, 4)):
+                dropped.append(name)
+                continue
+        kept.append(row)
+    return kept, dropped
+
+
+def export_map(ctx: Context, force_ghidra: bool = False) -> str:
+    """Desenvolvimento: gera o mapa de funções do ELF ORIGINAL da ISO e grava em games/<serial>/.
+
+    Duas fontes: o Ghidra (limites de função e wrappers de chamada de sistema) e o ps2_analyzer
+    (funções do SDK da Sony reconhecidas por assinatura). O Ghidra só roda de novo com force_ghidra.
+    """
     ingest(ctx)
     mdir = ctx.workdir / "map"
     mdir.mkdir(parents=True, exist_ok=True)
@@ -338,11 +431,25 @@ def export_map(ctx: Context) -> str:
     with IsoReader(ctx.iso) as iso:
         elf.write_bytes(iso.read(ctx.game["elf"]))
     toml, csv = mdir / "config.toml", mdir / "functions.csv"
-    _run_ghidra(ctx, "export-map", elf, mdir / "ghidra", toml, csv)
+    if force_ghidra or not (toml.is_file() and csv.is_file()):
+        _run_ghidra(ctx, "export-map", elf, mdir / "ghidra", toml, csv)
+    else:
+        ctx.reporter.log("Reaproveitando a análise do Ghidra já feita (use --force para refazer).")
+    analyzer = ctx.env.ps2_analyzer_exe
+    if not analyzer.is_file():
+        raise StageError(f"ps2_analyzer não compilado: {analyzer}")
+    sdk_toml = mdir / "sdk.toml"
+    run_tool(ctx, "export-map-sdk", [str(analyzer), str(elf), str(sdk_toml)], cwd=mdir)
+
     d = ctx.env.games / ctx.game["serial"]
     d.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(csv, d / "functions.csv")
+    lines = csv.read_text("utf-8").splitlines()
+    rows, dropped = drop_data_entries([line.split(",") for line in lines[1:] if line], elf.read_bytes())
+    if dropped:
+        ctx.reporter.log(f"Descartadas {len(dropped)} entradas que são dados, não código: {', '.join(dropped[:6])}")
+    (d / "functions.csv").write_text("\n".join([lines[0], *(",".join(r) for r in rows)]) + "\n", "utf-8")
     template = _set_config_paths(toml.read_text("utf-8"), {k: f"@{k.upper()}@" for k in _PATH_KEYS})
+    template, n_ghidra, n_sdk, _ = _merge_sdk_stubs(template, sdk_toml)
     (d / "recomp.toml").write_text(template, "utf-8")
     script = ctx.env.ghidra_script_dir / "ExportPS2Functions.java"
     g = ctx.game
@@ -353,12 +460,50 @@ def export_map(ctx: Context) -> str:
         f'elf_sha1 = "{g["elf_sha1"]}"',
         f'elf_crc_pcsx2 = "{g["elf_crc_pcsx2"]}"',
         f'entry = "{g["entry"]}"',
-        f"entries = {_count_rows(csv)}",
+        f"entries = {len(rows)}",
+        f"dropped_data_entries = {len(dropped)}",
+        f"stubs_syscall = {n_ghidra}",
+        f"stubs_sdk = {n_sdk}",
         f'ghidra = "{ctx.env.ghidra.name}"',
         f'export_script_sha1 = "{sha1_file(script)}"',
     ]
     (d / "game.toml").write_text("\n".join(meta) + "\n", "utf-8")
-    return f"mapa de {g['serial']} gravado em {d} ({_count_rows(csv)} funções/entradas)"
+    return (f"mapa de {g['serial']} gravado em {d}: {len(rows)} funções/entradas, "
+            f"{n_ghidra} chamadas de sistema + {n_sdk} funções do SDK ligadas ao runtime")
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            ca, cb = fa.read(1 << 20), fb.read(1 << 20)
+            if ca != cb:
+                return False
+            if not ca:
+                return True
+
+
+def sync_generated(new: Path, out: Path) -> tuple[int, int]:
+    """Leva para `out` só o que mudou em `new` e apaga o que sumiu. Devolve (alterados, removidos).
+
+    Arquivo igual não é tocado, então mantém a data e o compilador não o refaz.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    fresh = {e.name for e in os.scandir(new) if e.is_file()}
+    changed = 0
+    for name in fresh:
+        src, dst = new / name, out / name
+        if dst.is_file() and _same_file(src, dst):
+            continue
+        os.replace(src, dst)
+        changed += 1
+    removed = 0
+    for e in list(os.scandir(out)):
+        if e.is_file() and e.name not in fresh:
+            os.unlink(e.path)
+            removed += 1
+    return changed, removed
 
 
 def recompile(ctx: Context) -> str:
@@ -366,18 +511,159 @@ def recompile(ctx: Context) -> str:
     exe = ctx.env.ps2_recomp_exe
     if not exe.is_file():
         raise StageError(f"ps2_recomp não compilado: {exe}")
-    out = ctx.gen / "output"
+    out, new = ctx.gen / "output", ctx.gen / "output.new"
     key = key_of(sha1_file(toml), sha1_file(csv), sha1_file(ctx.elf), sha1_file(exe))
     if out.is_dir() and any(out.iterdir()) and ctx.is_cached("recompile", key):
         return "cache"
-    if out.is_dir():
-        shutil.rmtree(out)
-    run_tool(ctx, "recompile", [str(exe), str(toml)], cwd=ctx.gen)
-    cpp = list(out.glob("*.cpp"))
-    if not cpp:
+    # Gera numa pasta à parte e sincroniza: quem não mudou continua com a mesma data.
+    shutil.rmtree(new, ignore_errors=True)
+    run_toml = ctx.gen / "config.run.toml"
+    paths = {"input": ctx.elf.as_posix(), "output": new.as_posix(), "ghidra_output": csv.as_posix()}
+    run_toml.write_text(_set_config_paths(toml.read_text("utf-8"), paths), "utf-8")
+    run_tool(ctx, "recompile", [str(exe), str(run_toml)], cwd=ctx.gen)
+    if not any(new.glob("*.cpp")):
         raise StageError("ps2_recomp não gerou arquivos .cpp (ver work/logs/recompile.log)")
+    ctx.reporter.log("Comparando com a geração anterior...")
+    changed, removed = sync_generated(new, out)
+    shutil.rmtree(new, ignore_errors=True)
+    cpp = list(out.glob("*.cpp"))
     ctx.mark("recompile", key)
-    return f"{len(cpp)} arquivos .cpp, {sum(f.stat().st_size for f in cpp) / 1e6:.0f} MB de C++"
+    return (f"{len(cpp)} arquivos .cpp, {sum(f.stat().st_size for f in cpp) / 1e6:.0f} MB de C++ "
+            f"({changed} alterados, {removed} removidos)")
+
+
+_ADDRESS_SUFFIX = re.compile(r"_0x([0-9a-fA-F]+)\.cpp$")
+
+
+def write_unity_buckets(out: Path, unity: Path, shift: int) -> tuple[int, int]:
+    """Agrupa os .cpp gerados em unidades de compilação por faixa de endereço.
+
+    Cada unidade inclui as funções cujo endereço cai na mesma faixa de 2^shift bytes. O grupo de uma
+    função depende só do endereço dela, não do nome nem das vizinhas, então mudar ou renomear uma
+    função recompila uma unidade só. Devolve (unidades, unidades reescritas).
+    """
+    unity.mkdir(parents=True, exist_ok=True)
+    buckets: dict[str, list[str]] = {}
+    for name in sorted(e.name for e in os.scandir(out) if e.is_file() and e.name.endswith(".cpp")):
+        m = _ADDRESS_SUFFIX.search(name)
+        bucket = f"u_{int(m.group(1), 16) >> shift:06x}" if m else "x_" + name[:-4]
+        buckets.setdefault(bucket, []).append(name)
+    wanted: dict[str, str] = {
+        f"{bucket}.cpp": "".join(f'#include "{(out / n).as_posix()}"\n' for n in names)
+        for bucket, names in buckets.items()
+    }
+    rewritten = 0
+    for fname, content in wanted.items():
+        path = unity / fname
+        if not path.is_file() or path.read_text("utf-8") != content:
+            path.write_text(content, "utf-8")
+            rewritten += 1
+    for header in out.glob("*.h"):  # o CMake procura os cabeçalhos gerados ao lado das unidades
+        dst = unity / header.name
+        if not dst.is_file() or not _same_file(header, dst):
+            shutil.copyfile(header, dst)
+    for e in list(os.scandir(unity)):
+        if e.is_file() and e.name.endswith(".cpp") and e.name not in wanted:
+            os.unlink(e.path)
+    return len(wanted), rewritten
+
+
+def runtime_handlers(call_list: Path) -> dict[str, str]:
+    """Nome de cada handler do runtime -> namespace C++ (ps2_syscalls ou ps2_stubs), lido de ps2_call_list.h."""
+    handlers: dict[str, str] = {}
+    namespace = None
+    for line in call_list.read_text("utf-8", errors="replace").splitlines():
+        if line.startswith("#define PS2_SYSCALL_LIST"):
+            namespace = "ps2_syscalls"
+        elif line.startswith("#define PS2_STUB_LIST"):
+            namespace = "ps2_stubs"
+        elif line.startswith("#define"):
+            namespace = None
+        elif namespace:
+            for name in re.findall(r"\bX\((\w+)\)", line):
+                handlers.setdefault(name, namespace)
+    return handlers
+
+
+def load_manual_stubs(path: Path) -> list[tuple[str, int]]:
+    """Lê games/<serial>/stubs.toml: lista de "handler@0xENDERECO" identificados por engenharia reversa."""
+    if not path.is_file():
+        return []
+    with open(path, "rb") as f:
+        entries = tomllib.load(f).get("stubs", [])
+    out = []
+    for entry in entries:
+        if "@" not in entry:
+            raise StageError(f"{path.name}: '{entry}' precisa ter a forma handler@0xENDERECO")
+        name, address = entry.rsplit("@", 1)
+        out.append((name, int(address, 16)))
+    return out
+
+
+def render_manual_stubs(stubs: list[tuple[str, int]], handlers: dict[str, str], elf_name: str, entry: int) -> str:
+    """Fonte C++ que liga em runtime cada endereço ao handler nativo, do mesmo jeito que o recompilador faria.
+
+    Aplicar em runtime (game override) em vez de pelo TOML evita regenerar o cabeçalho de stubs, que
+    todas as unidades incluem: acrescentar uma ligação recompila só este arquivo.
+    """
+    lines = [
+        "// Gerado pelo recomp-app a partir de games/<serial>/stubs.toml. Não editar à mão.",
+        '#include "game_overrides.h"',
+        '#include "ps2_runtime.h"',
+        '#include "ps2_stubs.h"',
+        '#include "ps2_syscalls.h"',
+        "#include <iostream>",
+        "",
+        "namespace",
+        "{",
+    ]
+    for name, address in stubs:
+        if name not in handlers:
+            raise StageError(f"stubs.toml: o runtime não tem um handler chamado '{name}' (endereço 0x{address:08X})")
+        lines += [
+            f"    void manual_{name}_0x{address:08x}(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)",
+            "    {",
+            "        ctx->pc = getRegU32(ctx, 31); // volta para quem chamou, como o wrapper do recompilador",
+            f"        {handlers[name]}::{name}(rdram, ctx, runtime);",
+            "    }",
+            "",
+        ]
+    lines += ["    void applyManualStubs(PS2Runtime &runtime)", "    {"]
+    for name, address in stubs:
+        lines += [
+            f"        if (!runtime.replaceFunction(0x{address:08X}u, &manual_{name}_0x{address:08x}))",
+            f'            std::cerr << "[recomp-app] falha ao ligar {name} em 0x{address:08X}" << std::endl;',
+        ]
+    lines += [
+        f'        std::cout << "[recomp-app] {len(stubs)} ligacoes manuais aplicadas" << std::endl;',
+        "    }",
+        "}",
+        "",
+        f'PS2_REGISTER_GAME_OVERRIDE("recomp-app manual stubs", "{elf_name}", 0x{entry:08X}u, 0u, applyManualStubs)',
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_overrides(ctx: Context, dest: Path) -> int:
+    """Monta a pasta de fontes extras do jogo: ligações manuais geradas + fontes escritos à mão em games/<serial>/src."""
+    gdir = ctx.env.games / ctx.game["serial"]
+    stubs = load_manual_stubs(gdir / "stubs.toml")
+    handlers = runtime_handlers(ctx.env.ps2recomp_src / "ps2xRuntime" / "include" / "ps2_call_list.h")
+    wanted = {"recomp_manual_stubs.cpp": render_manual_stubs(stubs, handlers, ctx.game["elf"], int(ctx.game["entry"], 16))}
+    if (gdir / "src").is_dir():
+        for f in sorted((gdir / "src").iterdir()):
+            if f.suffix in (".cpp", ".h", ".hpp"):
+                wanted[f.name] = f.read_text("utf-8")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, content in wanted.items():
+        path = dest / name
+        if not path.is_file() or path.read_text("utf-8") != content:
+            path.write_text(content, "utf-8")
+    for e in list(os.scandir(dest)):
+        if e.is_file() and e.name not in wanted:
+            os.unlink(e.path)
+    return len(stubs)
 
 
 def build(ctx: Context) -> str:
@@ -385,26 +671,34 @@ def build(ctx: Context) -> str:
     out = ctx.gen / "output"
     if not any(out.glob("*.cpp")):
         raise StageError("nada para compilar: rode a etapa de conversão antes")
-    extra = ctx.env.games / ctx.game["serial"] / "src"  # fontes escritos à mão para o jogo (overrides)
+    unity = ctx.gen / "unity"
+    units, rewritten = write_unity_buckets(out, unity, ctx.env.bucket_shift)
+    ctx.reporter.log(f"{units} unidades de compilação ({rewritten} novas ou alteradas na lista de arquivos).")
+    extra = ctx.gen / "overrides"
+    n_manual = write_overrides(ctx, extra)
+    ctx.reporter.log(f"{n_manual} ligações manuais do jogo aplicadas em runtime.")
 
     bdir = ctx.workdir / "build"
-    if not (bdir / "build.ninja").is_file() or "build" in ctx.force:
-        opt = f"{ctx.env.opt_level} -DNDEBUG"
-        run_tool(ctx, "build-configure", [
-            "cmake", "-S", str(ctx.env.ps2recomp_src), "-B", str(bdir), "-G", "Ninja",
-            # RelWithDebInfo sem -g: o modo Release do PS2Recomp liga LTO, inviável com este volume de código.
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO={opt}",
-            f"-DCMAKE_C_FLAGS_RELWITHDEBINFO={opt}",
-            f"-DPS2X_RUNNER_SOURCE_DIR={out.as_posix()}",
-            f"-DPS2X_RUNNER_EXTRA_SOURCE_DIR={extra.as_posix() if extra.is_dir() else ''}",
-            f"-DPS2X_RUNNER_UNITY_BUILD_BATCH_SIZE={ctx.env.unity_batch}",
-            "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
-            f"-DCMAKE_C_FLAGS={ctx.env.cxx_flags}", f"-DCMAKE_CXX_FLAGS={ctx.env.cxx_flags}",
-            "-DCMAKE_C_COMPILER_LAUNCHER=ccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-            "-DPS2X_BUILD_STUDIO=OFF", "-DPS2X_BUILD_TEST=OFF", "-DPS2X_BUILD_ANALYZER=OFF",
-            "-DPS2X_BUILD_RECOMP=OFF", "-DPS2X_ENABLE_FFMPEG=OFF",
-        ])
+    opt = f"{ctx.env.opt_level} -DNDEBUG"
+    configure = [
+        "cmake", "-S", str(ctx.env.ps2recomp_src), "-B", str(bdir), "-G", "Ninja",
+        # RelWithDebInfo sem -g: o modo Release do PS2Recomp liga LTO, inviável com este volume de código.
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO={opt}",
+        f"-DCMAKE_C_FLAGS_RELWITHDEBINFO={opt}",
+        f"-DPS2X_RUNNER_SOURCE_DIR={unity.as_posix()}",
+        f"-DPS2X_RUNNER_EXTRA_SOURCE_DIR={extra.as_posix()}",
+        "-DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF",  # o agrupamento é o nosso, por faixa de endereço
+        "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
+        f"-DCMAKE_C_FLAGS={ctx.env.cxx_flags}", f"-DCMAKE_CXX_FLAGS={ctx.env.cxx_flags}",
+        "-DCMAKE_C_COMPILER_LAUNCHER=ccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        "-DPS2X_BUILD_STUDIO=OFF", "-DPS2X_BUILD_TEST=OFF", "-DPS2X_BUILD_ANALYZER=OFF",
+        "-DPS2X_BUILD_RECOMP=OFF", "-DPS2X_ENABLE_FFMPEG=OFF",
+    ]
+    cfg_key = key_of(*configure)
+    if not (bdir / "build.ninja").is_file() or "build" in ctx.force or not ctx.is_cached("build_configure", cfg_key):
+        run_tool(ctx, "build-configure", configure)
+        ctx.mark("build_configure", cfg_key)
     run_tool(ctx, "build", ["cmake", "--build", str(bdir), "--target", "ps2EntryRunner", "-j", str(ctx.env.jobs)])
     exe = next(bdir.rglob("ps2EntryRunner.exe"), None)
     if exe is None:

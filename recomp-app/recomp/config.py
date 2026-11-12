@@ -47,7 +47,7 @@ class Env:
     cxx_flags: str
     ccache_dir: Path
     opt_level: str
-    unity_batch: int
+    bucket_shift: int  # log2 da faixa de endereços agrupada em cada unidade de compilação
     games: Path  # metadados por jogo incluídos no app (mapa de funções, overrides)
 
     @property
@@ -99,6 +99,6 @@ def load_env(path: Path | None = None) -> Env:
         cxx_flags=str(b.get("cxx_flags", "-msse4.1")),
         ccache_dir=_abs(b.get("ccache_dir", "work/ccache")),
         opt_level=str(b.get("opt_level", "-O1")),
-        unity_batch=int(b.get("unity_batch", 32)),
+        bucket_shift=int(b.get("bucket_shift", 11)),
         games=APP_DIR / "games",
     )

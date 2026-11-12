@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "export-map":
         ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())
         try:
-            print(export_map(ctx))
+            print(export_map(ctx, force_ghidra=args.force or args.force_all))
         except StageError as e:
             print(f"erro: {e}")
             return 1

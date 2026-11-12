@@ -1,0 +1,10 @@
+# Funções do SDK identificadas à mão (engenharia reversa), que o analisador automático não reconhece.
+# O build gera um fonte C++ que liga cada endereço ao handler em runtime (substitui a função recompilada).
+# Acrescentar uma linha aqui recompila só esse fonte e relinka: não regenera o código do jogo.
+# Formato: "nomeDoHandlerNoRuntime@0xENDERECO". Anote como a função foi identificada.
+
+stubs = [
+  # libcdvd. Liga o RPC 0x80000597 (busca de arquivo do cdvdfsv) e repete até client.serve != 0.
+  # Argumentos: a0 = sceCdlFILE*, a1 = nome. O jogo ficava preso neste laço no boot.
+  "sceCdSearchFile@0x00398890",
+]

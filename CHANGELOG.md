@@ -8,7 +8,18 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
 
 ## [Não lançado]
 
+> **Ainda não validado com um build do jogo:** a aplicação das ligações manuais em runtime e o mapa sem as
+> duas tabelas de dados. Os testes unitários passam; o próximo build do jogo confirma.
+
 ### Alterado
+- O mapa de funções inclui também as funções do SDK da Sony reconhecidas por assinatura pelo `ps2_analyzer`
+  (127 no God Hand, como `sceSifInitRpc`, `sceCdRead`, `scePad*`, `sceGs*`), ligadas às implementações nativas do
+  runtime. Sem elas o jogo travava no boot esperando o IOP. `recomp export-map` reaproveita a análise do Ghidra já
+  feita (`--force` refaz).
+- O `export-map` descarta entradas do mapa que são tabelas de dados e não código (no God Hand, duas "funções" de
+  26 KB e 229 KB na `.data`).
+- Build incremental: a conversão só toca nos `.cpp` que mudaram, e o código é agrupado em unidades de compilação por
+  faixa de endereço (`bucket_shift` no `env.toml`); mudar uma função recompila só a unidade dela.
 - A etapa "Analisar ELF no Ghidra" virou "Mapa de funções do executável": o mapa vem incluído no app em
   `recomp-app/games/<serial>/`, reconhecido pelo SHA-1 do executável original. Quem usa o app não precisa
   mais de Ghidra nem de Java. Ghidra, extensão R5900 e JDK passam a ser opcionais na checagem de ambiente.
@@ -20,6 +31,8 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
   **Patches** e **Mods** são separadas; na CLI, `recomp patches` e `recomp mods`.
 
 ### Adicionado
+- `games/<serial>/stubs.toml`: funções do SDK identificadas à mão, ligadas ao handler nativo em runtime por um
+  fonte gerado no build (acrescentar uma ligação recompila só esse fonte). Primeira entrada: `sceCdSearchFile`.
 - Mapa de funções do God Hand USA (`SLUS_215.03`, 62.916 entradas) em `recomp-app/games/SLUS-21503/`.
 - `recomp export-map` (desenvolvimento): gera o mapa de funções do executável original com o Ghidra.
 - Teste de consistência dos mapas de funções versionados (`tests/test_games.py`).
