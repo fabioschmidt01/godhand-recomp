@@ -1,12 +1,18 @@
 """Carrega env.toml e resolve os caminhos do projeto."""
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent.parent
-ROOT = APP_DIR.parent
+if getattr(sys, "frozen", False):
+    # App empacotado: o executável fica na raiz do pacote, ao lado de recomp-app/, third_party/, patches/...
+    ROOT = Path(sys.executable).resolve().parent
+    APP_DIR = ROOT / "recomp-app"
+else:
+    APP_DIR = Path(__file__).resolve().parent.parent
+    ROOT = APP_DIR.parent
 
 
 UNSET = ROOT / ".nao-configurado"  # caminho que nunca existe: ferramenta opcional sem caminho definido

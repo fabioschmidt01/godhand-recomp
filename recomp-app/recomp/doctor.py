@@ -6,7 +6,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .bios import BiosError, identify_bios
 from .config import Env
+from .settings import bios_path, load_settings
 from .pipeline import tool_env
 
 
@@ -38,6 +40,16 @@ def _path(name: str, p: Path, required: bool = True, hint: str = "") -> Check:
     return Check(name, ok, str(p) if ok else f"ausente: {p}{' (' + hint + ')' if hint else ''}", required)
 
 
+def _bios_check(env: Env) -> Check:
+    path = bios_path(env)
+    if path is None:
+        return Check("BIOS do PS2", False, "não escolhida (necessária para o IOP nas próximas versões)", required=False)
+    try:
+        return Check("BIOS do PS2", True, f"{identify_bios(path).describe()}: {path}", required=False)
+    except BiosError as e:
+        return Check("BIOS do PS2", False, str(e), required=False)
+
+
 def run_doctor(env: Env) -> list[Check]:
     ext = env.ghidra / "Ghidra" / "Extensions" / "ghidra-emotionengine-reloaded"
     free = shutil.disk_usage(env.root).free / 1e9
@@ -48,11 +60,12 @@ def run_doctor(env: Env) -> list[Check]:
         _cmd(env, "ninja", ["--version"]),
         _cmd(env, "g++", ["--version"]),
         _cmd(env, "ccache", ["--version"], required=False),
-        _path("ISO do jogo", env.iso),
+        _path("ISO do jogo", Path(load_settings(env).get("iso") or env.iso)),
         Check("Mapas de funções incluídos no app", bool(maps), ", ".join(maps) if maps else f"nenhum em {env.games}"),
         _path("Ghidra headless (só desenvolvimento)", env.ghidra_headless, required=False),
         _path("Ghidra: extensão R5900 (só desenvolvimento)", ext, required=False, hint="ghidra-emotionengine-reloaded"),
         _path("JDK 21 (só desenvolvimento)", env.java_home / "bin" / "java.exe", required=False),
+        _bios_check(env),
         _path("xdelta3", env.xdelta3),
         _path("PS2Recomp (código)", env.ps2recomp_src / "CMakeLists.txt"),
         _path("ps2_recomp.exe", env.ps2_recomp_exe, hint="compilar o PS2Recomp"),

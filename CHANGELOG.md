@@ -31,6 +31,16 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
   **Patches** e **Mods** são separadas; na CLI, `recomp patches` e `recomp mods`.
 
 ### Adicionado
+- Launcher novo, no estilo do KarPur Launcher: barra lateral com Início, Preparação, Configurações, Saves,
+  Patches, Mods, Sistema, Atualizações e Feedback, e o botão Jogar fixo embaixo. Tema escuro com a cor de destaque
+  do jogo (dourado), trocável por violeta ou azul em Configurações. Barra de título escura no Windows.
+- Campo da BIOS do PS2 em Preparação, com validação (diretório ROMDIR, versão, região e data lidas do `ROMVER`) e
+  a explicação de por que ela é pedida. A BIOS é só lida, nunca enviada; ainda é opcional nesta versão.
+- O launcher lembra a ISO e a BIOS escolhidas (`work/settings.json`) e mostra o serial da ISO ao escolher.
+- Configurações de compilação na interface: compilações em paralelo e nível de otimização.
+- Saves: exportar e importar o cartão de memória (zip), com cópia de segurança ao importar.
+- Atualizações: consulta a release mais recente no GitHub. Feedback: abre uma issue com CPU, GPU, RAM e Windows
+  lidos do PC.
 - `games/<serial>/stubs.toml`: funções do SDK identificadas à mão, ligadas ao handler nativo em runtime por um
   fonte gerado no build (acrescentar uma ligação recompila só esse fonte). Primeira entrada: `sceCdSearchFile`.
 - Mapa de funções do God Hand USA (`SLUS_215.03`, 62.916 entradas) em `recomp-app/games/SLUS-21503/`.
