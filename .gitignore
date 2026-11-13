@@ -26,6 +26,8 @@
 *.AFS
 *.xdelta
 *.pnach
+# Arte do jogo usada no launcher (logo, fundo): do usuário, nunca versionada.
+/art/
 *.ROM0
 *.ROM1
 *.NVM

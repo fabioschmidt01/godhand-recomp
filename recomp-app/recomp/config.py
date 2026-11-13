@@ -41,6 +41,7 @@ class Env:
     mods: Path
     textures: Path
     out: Path
+    art: Path  # imagens do launcher fornecidas pelo usuário (logo.png, banner.png); nunca versionadas
     ps2recomp_src: Path
     ps2recomp_build: Path
     ghidra: Path
@@ -92,6 +93,7 @@ def load_env(path: Path | None = None) -> Env:
         patches=_abs(d.get("patches", "patches")),
         mods=_abs(d.get("mods", "mods")),
         textures=_abs(d.get("textures", "textures")),
+        art=_abs(d.get("art", "art")),
         out=_abs(d.get("out", "out")),
         ps2recomp_src=_abs(tools.get("ps2recomp_src", "third_party/PS2Recomp")),
         ps2recomp_build=_abs(tools.get("ps2recomp_build", "work/build/ps2recomp")),

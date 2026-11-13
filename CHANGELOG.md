@@ -34,6 +34,8 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
 - Launcher novo, no estilo do KarPur Launcher: barra lateral com Início, Preparação, Configurações, Saves,
   Patches, Mods, Sistema, Atualizações e Feedback, e o botão Jogar fixo embaixo. Tema escuro com a cor de destaque
   do jogo (dourado), trocável por violeta ou azul em Configurações. Barra de título escura no Windows.
+- Tela inicial com a arte do jogo: se existirem `art/banner.png` e `art/logo.png` (imagens do próprio usuário,
+  nunca versionadas), a faixa mostra a foto e o logo; sem elas, volta à faixa desenhada.
 - Campo da BIOS do PS2 em Preparação, com validação (diretório ROMDIR, versão, região e data lidas do `ROMVER`) e
   a explicação de por que ela é pedida. A BIOS é só lida, nunca enviada; ainda é opcional nesta versão.
 - O launcher lembra a ISO e a BIOS escolhidas (`work/settings.json`) e mostra o serial da ISO ao escolher.

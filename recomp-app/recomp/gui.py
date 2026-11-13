@@ -420,17 +420,47 @@ class Check(QAbstractButton):
 
 
 class Banner(QWidget):
-    """Faixa da página inicial. Sem arte do jogo: degradê, o brilho dourado da God Hand e o nome em letreiro."""
+    """Faixa da página inicial. Com as imagens do usuário em art/ (banner.png e logo.png), mostra a arte do jogo;
+    sem elas, um degradê com o nome desenhado. A arte nunca vai para o repositório."""
 
-    def __init__(self):
+    def __init__(self, art: Path):
         super().__init__()
         self.setMinimumHeight(330)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.photo = QPixmap(str(art / "banner.png")) if (art / "banner.png").is_file() else QPixmap()
+        self.logo = QPixmap(str(art / "logo.png")) if (art / "logo.png").is_file() else QPixmap()
+        self._cache: dict[str, tuple[QSize, QPixmap]] = {}
+
+    @property
+    def has_art(self) -> bool:
+        return not self.photo.isNull()
+
+    def _scaled(self, key: str, source: QPixmap, size: QSize, mode: Qt.AspectRatioMode) -> QPixmap:
+        cached = self._cache.get(key)
+        if cached is None or cached[0] != size:
+            pm = source.scaled(size * self.devicePixelRatioF(), mode, Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(self.devicePixelRatioF())
+            self._cache[key] = (size, pm)
+        return self._cache[key][1]
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         r = QRectF(self.rect())
+        if self.has_art:
+            # cobre a faixa inteira, ancorada à direita: o Gene fica inteiro e o branco à esquerda recebe o logo
+            photo = self._scaled("photo", self.photo, self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+            dpr = photo.devicePixelRatio()
+            pw, ph = photo.width() / dpr, photo.height() / dpr
+            p.drawPixmap(QPointF(r.width() - pw, (r.height() - ph) / 2), photo)
+            if not self.logo.isNull():
+                box = QSize(int(r.width() * 0.32), int(r.height() * 0.56))
+                logo = self._scaled("logo", self.logo, box, Qt.AspectRatioMode.KeepAspectRatio)
+                p.drawPixmap(QPointF(34, 24), logo)
+            p.setPen(QPen(QColor(0, 0, 0, 90), 1))
+            p.drawLine(QPointF(0, r.height() - 0.5), QPointF(r.width(), r.height() - 0.5))
+            return
         base = QLinearGradient(r.topLeft(), r.bottomRight())
         base.setColorAt(0, QColor(T["side"]).lighter(118))
         base.setColorAt(1, QColor(T["bg"]))
@@ -443,8 +473,7 @@ class Banner(QWidget):
         glow.setColorAt(1, c)
         p.fillRect(r, glow)
         p.setPen(QPen(QColor(255, 255, 255, 8), 1))  # textura de riscos diagonais, bem leve
-        step = 14
-        for x in range(-int(r.height()), int(r.width()), step):
+        for x in range(-int(r.height()), int(r.width()), 14):
             p.drawLine(QPointF(x, r.height()), QPointF(x + r.height(), 0))
         title = QFont(DISPLAY)
         title.setPixelSize(int(min(118, r.width() * 0.13)))
@@ -711,18 +740,20 @@ class MainWindow(QMainWindow):
     def _home_page(self) -> Page:
         page = Page("", "")
         page.body.setContentsMargins(0, 0, 0, 28)
-        self.banner = Banner()
+        self.banner = Banner(self.env.art)
         banner_lay = QVBoxLayout(self.banner)
-        banner_lay.setContentsMargins(34, 0, 34, 30)
+        banner_lay.setContentsMargins(34, 0, 34, 28)
         banner_lay.addStretch(1)
-        self.home_status = text("", "subtitle", wrap=True)
-        self.home_status.setMaximumWidth(520)
-        banner_lay.addWidget(self.home_status)
-        banner_lay.addSpacing(14)
         row = QHBoxLayout()
+        row.setSpacing(24)
+        self.home_status = text("", "subtitle", wrap=True)
+        self.home_status.setFixedWidth(430)
+        if self.banner.has_art:  # texto escuro sobre o estúdio branco da foto
+            self.home_status.setStyleSheet("color: #3a332c; font-size: 13px; font-weight: 600;")
+        row.addWidget(self.home_status, 0, Qt.AlignmentFlag.AlignBottom)
         row.addStretch(1)
         self.home_button = Button(ICON["setup"], "Ir para Preparação", "primary", self.home_action)
-        row.addWidget(self.home_button)
+        row.addWidget(self.home_button, 0, Qt.AlignmentFlag.AlignBottom)
         banner_lay.addLayout(row)
         page.body.addWidget(self.banner)
         tiles = QHBoxLayout()
