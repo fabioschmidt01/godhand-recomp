@@ -123,10 +123,11 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "$PWD/tools/ninja;$env:PATH"
-          cmake -S third_party/PS2Recomp -B build-tools -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER="$PWD/tools/llvm-mingw/bin/clang.exe" -DCMAKE_CXX_COMPILER="$PWD/tools/llvm-mingw/bin/clang++.exe" `
-            -DCMAKE_EXE_LINKER_FLAGS=-static -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
-            -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_STUDIO=OFF
+          # argumentos entre aspas: o PowerShell quebra "-DX=3.5" em "3" e ".5" sem elas
+          cmake -S third_party/PS2Recomp -B build-tools -G Ninja "-DCMAKE_BUILD_TYPE=Release" `
+            "-DCMAKE_C_COMPILER=$PWD/tools/llvm-mingw/bin/clang.exe" "-DCMAKE_CXX_COMPILER=$PWD/tools/llvm-mingw/bin/clang++.exe" `
+            "-DCMAKE_EXE_LINKER_FLAGS=-static" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
+            "-DPS2X_BUILD_RUNTIME=OFF" "-DPS2X_BUILD_TEST=OFF" "-DPS2X_BUILD_ANALYZER=OFF" "-DPS2X_BUILD_STUDIO=OFF"
           cmake --build build-tools --target ps2_recomp
           New-Item -ItemType Directory -Force recomp-app/bin | Out-Null
           Copy-Item build-tools/ps2xRecomp/ps2_recomp.exe recomp-app/bin/
