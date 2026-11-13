@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <chrono>
 #include <atomic>
@@ -370,6 +372,51 @@ namespace
             }
         }
         return out;
+    }
+}
+
+namespace
+{
+    // godhand-recomp: opções de teste lidas do ambiente (o launcher as usa em execuções automáticas).
+    bool envFlagOn(const char *name)
+    {
+        const char *value = std::getenv(name);
+        return value && *value && std::strcmp(value, "0") != 0;
+    }
+
+    // PS2X_SHOT_DIR=<pasta>: grava a imagem apresentada a cada PS2X_SHOT_INTERVAL segundos (padrão 2).
+    // Lê a textura do quadro, não a tela, então funciona com a janela escondida.
+    void maybeSaveFrameShot(const Texture2D &tex, uint32_t width, uint32_t height)
+    {
+        static const char *dir = std::getenv("PS2X_SHOT_DIR");
+        if (!dir || !*dir)
+        {
+            return;
+        }
+        static const double interval = []
+        {
+            const char *value = std::getenv("PS2X_SHOT_INTERVAL");
+            const double parsed = value ? std::atof(value) : 0.0;
+            return parsed > 0.0 ? parsed : 2.0;
+        }();
+        static auto last = std::chrono::steady_clock::time_point{};
+        static uint32_t index = 0u;
+        const auto now = std::chrono::steady_clock::now();
+        if (index != 0u && std::chrono::duration<double>(now - last).count() < interval)
+        {
+            return;
+        }
+        last = now;
+        Image image = LoadImageFromTexture(tex);
+        ImageCrop(&image, Rectangle{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)});
+        char name[32];
+        std::snprintf(name, sizeof(name), "shot-%04u.png", index++);
+        const std::string path = std::string(dir) + "/" + name;
+        if (ExportImage(image, path.c_str()))
+        {
+            std::cout << "[shot] " << path << std::endl;
+        }
+        UnloadImage(image);
     }
 }
 
@@ -731,10 +778,19 @@ bool PS2Runtime::initialize(const char *title)
 #if defined(PLATFORM_VITA)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+        // PS2X_WINDOW_HIDDEN=1: janela escondida (o jogo e a GPU funcionam normalmente); PS2X_MUTE=1: sem áudio.
+        const bool hiddenWindow = envFlagOn("PS2X_WINDOW_HIDDEN");
+        SetConfigFlags(FLAG_WINDOW_RESIZABLE | (hiddenWindow ? FLAG_WINDOW_HIDDEN : 0u));
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
-        InitAudioDevice();
-        m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        if (hiddenWindow || envFlagOn("PS2X_MUTE"))
+        {
+            m_audioBackend.setAudioReady(false);
+        }
+        else
+        {
+            InitAudioDevice();
+            m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        }
 #endif
         SetTargetFPS(60);
         if (m_debugUiInitCallback)
@@ -2423,6 +2479,7 @@ void PS2Runtime::run()
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
+        maybeSaveFrameShot(frameTex, presentWidth, presentHeight);
 
         BeginDrawing();
         ClearBackground(BLACK);

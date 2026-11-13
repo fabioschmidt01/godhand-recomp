@@ -517,8 +517,9 @@ endif()
 
 if(MSVC)
     target_compile_options(ps2EntryRunner PRIVATE /FS /bigobj)
-elseif(MINGW)
+elseif(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # A full game's register_functions.cpp exceeds the 32k-section limit of plain COFF objects.
+    # GNU as needs -mbig-obj; clang's integrated assembler switches to big objects by itself.
     target_compile_options(ps2EntryRunner PRIVATE -Wa,-mbig-obj)
 endif()
 
