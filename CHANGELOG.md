@@ -31,6 +31,20 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
   **Patches** e **Mods** são separadas; na CLI, `recomp patches` e `recomp mods`.
 
 ### Adicionado
+- **Pacote que não exige nada instalado.** O Actions monta `GodHandRecomp-<versão>-windows-x64` com o launcher
+  em `.exe` (Python incluso, via PyInstaller), o `recomp-cli.exe`, o clang (llvm-mingw cortado para x86-64), o
+  Ninja, o xdelta3, o recompilador e o **SDK do runtime**. O teste do pacote roda com o PATH vazio.
+- SDK do runtime (`recomp sdk`): o runtime do PS2Recomp, o raylib, o imgui e o IOP são compilados uma vez com o
+  clang do pacote e guardados como bibliotecas + cabeçalhos + `sdk.json`. No PC de quem joga, o app só compila o
+  código gerado do jogo e liga com o SDK, via Ninja (`build_system = "sdk"`): sem CMake, Git nem internet.
+- `env.package.toml`: camada de configuração que vem só no pacote (clang + SDK).
+- A checagem de ambiente separa o modo pacote (ISO, clang, Ninja, SDK, xdelta3, recompilador) do modo
+  desenvolvimento (Git, CMake, PS2Recomp, Ghidra).
+- Compilador escolhível para o jogo: `toolchain = "clang"` no `env.toml` usa o llvm-mingw em `tools/llvm-mingw`
+  (cada compilador tem sua pasta de build). `build_dir` aceita uma pasta curta e sem espaços para os builds.
+- `recomp run --hidden --shots <pasta>`: roda o jogo com a janela escondida e sem som e grava capturas da imagem do
+  jogo a cada `--shot-interval` segundos. No runtime: variáveis `PS2X_WINDOW_HIDDEN`, `PS2X_MUTE`, `PS2X_SHOT_DIR`
+  e `PS2X_SHOT_INTERVAL`.
 - Launcher novo, no estilo do KarPur Launcher: barra lateral com Início, Preparação, Configurações, Saves,
   Patches, Mods, Sistema, Atualizações e Feedback, e o botão Jogar fixo embaixo. Tema escuro com a cor de destaque
   do jogo (dourado), trocável por violeta ou azul em Configurações. Barra de título escura no Windows.

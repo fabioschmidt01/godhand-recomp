@@ -137,5 +137,43 @@ class DropDataEntriesTest(unittest.TestCase):
         self.assertEqual([r[0] for r in kept], ["entry", "entry_codigo", "FUN_grande_sem_ret", "entry_pequena"])
 
 
+class GameNinjaTest(unittest.TestCase):
+    def test_ninja_compiles_game_units_and_links_with_the_sdk(self):
+        import dataclasses
+        import json
+
+        from recomp.config import load_env
+        from recomp.sdk import write_game_ninja
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp) / "com espaço"
+            sdk, unity, extra, build = tmp / "sdk", tmp / "unity", tmp / "extra", tmp / "build"
+            for d in (sdk / "lib", sdk / "include" / "i00", unity, extra):
+                d.mkdir(parents=True)
+            (sdk / "sdk.json").write_text(json.dumps({
+                "defines": ["-DPS2X_ENABLE_DEBUG_UI=1"], "includes": ["include/i00"], "flags": ["-std=gnu++20"],
+                "objects": ["lib/main.o"], "libs": ["lib/libps2_runtime.a"], "syslibs": ["-lopengl32"],
+                "pch_headers": ["ps2_runtime.h"]}), "utf-8")
+            (unity / "u_000200.cpp").write_text("// a", "utf-8")
+            (unity / "x_register_functions.cpp").write_text("// b", "utf-8")
+            (unity / "ps2_recompiled_functions.h").write_text("// h", "utf-8")
+            (extra / "recomp_manual_stubs.cpp").write_text("// c", "utf-8")
+            env = dataclasses.replace(load_env(), toolchain="clang", llvm_mingw=tmp / "llvm")
+            exe = write_game_ninja(env, sdk, unity, extra, build, "game.exe", "-O1")
+            ninja = (build / "build.ninja").read_text("utf-8")
+            self.assertEqual(exe, build / "game.exe")
+            self.assertIn("build obj/u_000200.o: cxx", ninja)
+            self.assertIn("build obj/x_register_functions.o: cxx", ninja)
+            self.assertIn("build obj/extra_recomp_manual_stubs.o: cxx_plain", ninja)  # sem PCH
+            self.assertIn("com$ espaço", ninja)  # espaços escapados nos caminhos de entrada
+            self.assertIn("rspfile_content = $in $libs -static", ninja)  # linha de comando longa vai em arquivo
+            self.assertIn("-DPS2X_ENABLE_DEBUG_UI=1", ninja)
+            self.assertIn("-lopengl32", ninja)
+            pch = (build / "pch.hpp").read_text("utf-8")
+            self.assertIn('#include "ps2_runtime.h"', pch)
+            self.assertIn('#include "ps2_recompiled_functions.h"', pch)
+            self.assertNotIn("ps2_recompiled_stubs.h", pch)  # só inclui o que existe
+
+
 if __name__ == "__main__":
     unittest.main()

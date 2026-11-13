@@ -42,7 +42,7 @@ jobs:
           echo "ok: $(git ls-files | wc -l) arquivos versionados, nenhum proibido"
 
   app:
-    name: aplicação (testes + pacote)
+    name: aplicação (testes)
     needs: guard
     runs-on: windows-latest
     timeout-minutes: 60
@@ -86,34 +86,102 @@ jobs:
           python -m recomp patches
           python -m recomp mods
 
+  package:
+    name: pacote completo (launcher .exe + clang + SDK)
+    needs: guard
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONIOENCODING: utf-8
+      LLVM_MINGW: "20261104"
+      NINJA: "v1.13.2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Ferramentas que vão no pacote (clang, ninja, xdelta3)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force tools/llvm-mingw, tools/ninja, tools/xdelta3, dl | Out-Null
+          gh release download $env:LLVM_MINGW --repo mstorsjo/llvm-mingw --pattern "llvm-mingw-$($env:LLVM_MINGW)-ucrt-x86_64.zip" --dir dl
+          Expand-Archive "dl/llvm-mingw-$($env:LLVM_MINGW)-ucrt-x86_64.zip" dl
+          Move-Item "dl/llvm-mingw-$($env:LLVM_MINGW)-ucrt-x86_64/*" tools/llvm-mingw
+          python recomp-app/packaging/trim_llvm_mingw.py tools/llvm-mingw
+          gh release download $env:NINJA --repo ninja-build/ninja --pattern ninja-win.zip --dir dl
+          Expand-Archive dl/ninja-win.zip tools/ninja
+          gh release download v3.1.0 --repo jmacd/xdelta-gpl --pattern "xdelta3-3.1.0-x86_64.exe.zip" --dir dl
+          Expand-Archive dl/xdelta3-3.1.0-x86_64.exe.zip dl/xdelta3
+          Move-Item dl/xdelta3/xdelta3-3.1.0-x86_64.exe tools/xdelta3/xdelta3.exe
+          tools/llvm-mingw/bin/clang++.exe --version
+
+      - name: Recompilador (clang, estático)
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD/tools/ninja;$env:PATH"
+          cmake -S third_party/PS2Recomp -B build-tools -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER="$PWD/tools/llvm-mingw/bin/clang.exe" -DCMAKE_CXX_COMPILER="$PWD/tools/llvm-mingw/bin/clang++.exe" `
+            -DCMAKE_EXE_LINKER_FLAGS=-static -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_STUDIO=OFF
+          cmake --build build-tools --target ps2_recomp
+          New-Item -ItemType Directory -Force recomp-app/bin | Out-Null
+          Copy-Item build-tools/ps2xRecomp/ps2_recomp.exe recomp-app/bin/
+
+      - name: SDK do runtime (clang do pacote)
+        shell: pwsh
+        working-directory: recomp-app
+        run: |
+          $env:PATH = "$PWD/../tools/ninja;$env:PATH"
+          pip install -r requirements.txt
+          "[build]`ntoolchain = `"clang`"`nbuild_system = `"sdk`"`njobs = 4`n" | Out-File env.local.toml -Encoding utf8
+          python -m recomp sdk
+          Remove-Item env.local.toml
+
+      - name: Launcher .exe (Python incluso)
+        shell: pwsh
+        working-directory: recomp-app
+        run: |
+          pip install pyinstaller pillow
+          python packaging/make_icon.py packaging/icon.png
+          pyinstaller --noconfirm --distpath ../dist-exe --workpath ../build-exe packaging/GodHandRecomp.spec
+
       - name: Monta o pacote
         shell: pwsh
         run: |
           $version = (python -c "import sys; sys.path.insert(0, 'recomp-app'); import recomp; print(recomp.__version__)").Trim()
-          $name = "godhand-recomp-$version-windows-x64"
+          $name = "GodHandRecomp-$version-windows-x64"
           $pkg = "dist/$name"
-          New-Item -ItemType Directory -Force "$pkg/recomp-app/bin", "$pkg/third_party" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg/recomp-app", "$pkg/art" | Out-Null
+          Copy-Item -Recurse dist-exe/GodHandRecomp/* $pkg
           Copy-Item README.md, CHANGELOG.md $pkg
-          foreach ($dir in 'patches', 'mods', 'textures') { Copy-Item -Recurse $dir "$pkg/$dir" }
-          foreach ($item in 'recomp', 'games', 'env.toml', 'env.local.example.toml', 'requirements.txt', 'recomp.bat', 'recomp-gui.bat', 'README.md') {
-            Copy-Item -Recurse "recomp-app/$item" "$pkg/recomp-app/$item"
-          }
-          Get-ChildItem "$pkg/recomp-app" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
-          Copy-Item build/ps2xRecomp/ps2_recomp.exe "$pkg/recomp-app/bin/"
-          # Fontes do runtime: necessários para compilar o executável do jogo na máquina do usuário.
-          git archive --format=tar --prefix=PS2Recomp/ HEAD:third_party/PS2Recomp | tar -x -C "$pkg/third_party"
+          foreach ($item in 'games', 'bin', 'env.toml', 'README.md') { Copy-Item -Recurse "recomp-app/$item" "$pkg/recomp-app/$item" }
+          "[build]`ntoolchain = `"clang`"`nbuild_system = `"sdk`"`n" | Out-File "$pkg/recomp-app/env.package.toml" -Encoding utf8
+          foreach ($dir in 'patches', 'mods', 'textures', 'sdk', 'tools') { Copy-Item -Recurse $dir "$pkg/$dir" }
+          "Coloque aqui as suas imagens para a tela inicial: banner.png (fundo) e logo.png." | Out-File "$pkg/art/LEIA-ME.txt" -Encoding utf8
           "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "pacote: $name, $((Get-ChildItem $pkg -Recurse -File | Measure-Object).Count) arquivos"
+          $size = (Get-ChildItem $pkg -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          "pacote: $name, {0:N0} MB" -f $size
 
-      - name: Pacote funciona fora do repositório
+      - name: Pacote funciona sem nada instalado
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          Set-Location "dist/$env:PACKAGE_NAME/recomp-app"
-          python -m recomp --version
-          python -m recomp doctor | Select-String -Pattern 'ps2_recomp.exe|Mapas de fun'
-          python -c "from recomp.config import load_env; e = load_env(); assert e.ps2_recomp_exe.is_file(), e.ps2_recomp_exe; assert (e.ps2recomp_src / 'ps2xRuntime' / 'CMakeLists.txt').is_file(); print('pacote ok:', e.ps2_recomp_exe)"
+          $pkg = "dist/$env:PACKAGE_NAME"
+          # sem Python, CMake, Git, GCC nem Ninja do sistema no PATH: só o que está no pacote
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & "$pkg/recomp-cli.exe" --version
+          & "$pkg/recomp-cli.exe" doctor
+          $gui = Start-Process "$pkg/GodHandRecomp.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          if ($gui.ExitCode -ne 0) { throw "o launcher saiu com código $($gui.ExitCode)" }
+          Set-Content hello.cpp '#include <cstdio>
+          int main() { std::puts("clang do pacote ok"); }'
+          & "$pkg/tools/llvm-mingw/bin/clang++.exe" -static hello.cpp -o hello.exe
+          ./hello.exe
 
       - uses: actions/upload-artifact@v4
         with:

@@ -14,9 +14,12 @@ from .pipeline import STAGE_KEYS, STAGES, Context, Reporter, StageError, export_
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="recomp", description="Recomp estático de PS2: ISO -> C++ -> exe nativo")
-    ap.add_argument("command", choices=["gui", "doctor", "patches", "mods", "all", "run", "export-map", *[k.replace("_", "-") for k in STAGE_KEYS]],
+    ap.add_argument("command", choices=["gui", "doctor", "patches", "mods", "all", "run", "export-map", "sdk", *[k.replace("_", "-") for k in STAGE_KEYS]],
                     help="gui abre a interface; all roda o pipeline inteiro; uma etapa roda até ela; run executa o jogo; export-map (desenvolvimento) gera o mapa de funções com o Ghidra")
     ap.add_argument("--seconds", type=float, help="com run: encerra o jogo após esse tempo")
+    ap.add_argument("--hidden", action="store_true", help="com run: janela escondida e sem som (testes)")
+    ap.add_argument("--shots", type=Path, help="com run: grava capturas da imagem do jogo nesta pasta")
+    ap.add_argument("--shot-interval", type=float, default=2.0, help="com --shots: segundos entre capturas")
     ap.add_argument("--version", action="version", version=f"recomp {__version__}")
     ap.add_argument("--iso", type=Path, help="ISO do jogo (padrão: a de env.toml)")
     ap.add_argument("--force", action="store_true", help="ignora o cache da etapa pedida")
@@ -52,12 +55,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())
         try:
-            code = run_game(ctx, args.seconds)
+            code = run_game(ctx, args.seconds, hidden=args.hidden, shots=args.shots,
+                            shot_interval=args.shot_interval)
         except StageError as e:
             print(f"erro: {e}")
             return 1
         print("jogo encerrado pelo limite de tempo" if code is None else f"jogo terminou com código {code}")
         return 0 if code in (None, 0) else 1
+
+    if args.command == "sdk":
+        from .pipeline import run_tool
+        from .sdk import SdkError, build_sdk
+
+        ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())
+        try:
+            print(build_sdk(env, lambda stage, cmd: run_tool(ctx, stage, cmd), print, env.sdk))
+        except (StageError, SdkError) as e:
+            print(f"erro: {e}")
+            return 1
+        return 0
 
     if args.command == "export-map":
         ctx = Context(env=env, iso=(args.iso or env.iso).resolve(), reporter=Reporter())

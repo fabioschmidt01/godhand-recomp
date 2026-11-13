@@ -13,6 +13,7 @@ Aplicação (GUI + CLI) que leva uma ISO de PS2 até um executável nativo em C+
     recomp.bat <etapa>           roda até a etapa: ingest, patch-iso, extract, analyze, recompile, build
     recomp.bat <etapa> --force   ignora o cache da etapa
     recomp.bat run               executa o jogo compilado (--seconds N encerra após N segundos)
+    recomp.bat run --hidden --shots <pasta>   sem janela e sem som, com capturas de tela (testes)
 
 ## Etapas
 
@@ -25,10 +26,18 @@ Aplicação (GUI + CLI) que leva uma ISO de PS2 até um executável nativo em C+
 
 ## Configuração
 
-`env.toml` tem os padrões. Para caminhos da sua máquina, copie `env.local.example.toml` para
+`env.toml` tem os padrões (inclusive `toolchain`, "gcc" ou "clang", e `build_dir`). Para caminhos da sua máquina, copie `env.local.example.toml` para
 `env.local.toml` (não versionado) e ajuste.
 
+## Pacote para quem joga
+
+O Actions gera um pacote que roda sem nada instalado: launcher `.exe` com Python incluso, clang (llvm-mingw),
+Ninja, xdelta3, o recompilador e o SDK do runtime pré-compilado. No PC do usuário só o código do jogo é
+compilado. Os arquivos de empacotamento estão em `packaging/`.
+
 ## Desenvolvimento
+
+    recomp.bat sdk               gera o SDK do runtime com o clang (precisa de CMake e internet na primeira vez)
 
 `games/<serial>/` guarda o que foi obtido por engenharia reversa e é versionado junto com o app:
 `functions.csv` e `recomp.toml` (mapa de funções), `game.toml` (a qual executável o mapa pertence) e,

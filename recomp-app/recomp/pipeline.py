@@ -131,7 +131,8 @@ def pcsx2_crc(elf: bytes) -> str:
 
 def tool_env(env: Env) -> dict:
     e = dict(os.environ)
-    extra = [d for d in (env.java_home / "bin", env.mingw_bin) if d.is_dir()]  # só o que está configurado
+    llvm = env.llvm_mingw / "bin" if env.toolchain == "clang" else None
+    extra = [d for d in (llvm, env.java_home / "bin", env.mingw_bin) if d is not None and d.is_dir()]
     if (env.java_home / "bin").is_dir():
         e["JAVA_HOME"] = str(env.java_home)
     e["PATH"] = os.pathsep.join([*map(str, extra), e.get("PATH", "")])
@@ -666,6 +667,47 @@ def write_overrides(ctx: Context, dest: Path) -> int:
     return len(stubs)
 
 
+def ensure_sdk(ctx: Context) -> Path:
+    """O SDK do runtime: o do pacote, ou gerado aqui a partir do PS2Recomp (desenvolvimento)."""
+    from .sdk import build_sdk
+
+    if (ctx.env.sdk / "sdk.json").is_file():
+        return ctx.env.sdk
+    if not (ctx.env.ps2recomp_src / "CMakeLists.txt").is_file():
+        raise StageError(f"o SDK do runtime não está em {ctx.env.sdk} (ele vem no pacote do app)")
+    ctx.reporter.log("SDK do runtime ainda não existe: gerando a partir do PS2Recomp (uma vez).")
+    build_sdk(ctx.env, lambda stage, cmd: run_tool(ctx, stage, cmd), ctx.reporter.log, ctx.env.sdk)
+    return ctx.env.sdk
+
+
+def build_with_sdk(ctx: Context, unity: Path, extra: Path, bdir: Path) -> str:
+    """Compila só o código do jogo com o clang do pacote e liga com o SDK, via Ninja: sem CMake."""
+    from .sdk import SdkError, write_game_ninja
+
+    cc, cxx = ctx.env.compilers
+    if not Path(cxx).is_file():
+        raise StageError(f"clang não encontrado em {ctx.env.llvm_mingw}")
+    sdk = ensure_sdk(ctx)
+    try:
+        exe = write_game_ninja(ctx.env, sdk, unity, extra, bdir, "game.exe", ctx.env.opt_level)
+    except SdkError as e:
+        raise StageError(str(e)) from e
+    ctx.reporter.log(f"Compilador: clang (pacote) · SDK: {sdk} · pasta do build: {bdir}")
+    run_tool(ctx, "build", [ctx.env.ninja, "-C", str(bdir), "-j", str(ctx.env.jobs)])
+    dest = ctx.env.out / ctx.game["serial"]
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(exe, dest / "game.exe")
+    return f"{dest / 'game.exe'} ({exe.stat().st_size / 1e6:.0f} MB)"
+
+
+def build_dir(ctx: Context) -> Path:
+    """Pasta do build do jogo. Uma por compilador: trocar de compilador exige um cache do CMake novo."""
+    kind = "ninja-sdk" if ctx.env.build_system == "sdk" else ctx.env.toolchain
+    if ctx.env.build_dir.name != ".nao-configurado":
+        return ctx.env.build_dir / ctx.game["serial"] / kind
+    return ctx.workdir / ("build" if kind == "gcc" else f"build-{kind}")
+
+
 def build(ctx: Context) -> str:
     """Compila ps2EntryRunner com o C++ gerado lido direto de work/ (nada é copiado para o repositório)."""
     out = ctx.gen / "output"
@@ -678,7 +720,13 @@ def build(ctx: Context) -> str:
     n_manual = write_overrides(ctx, extra)
     ctx.reporter.log(f"{n_manual} ligações manuais do jogo aplicadas em runtime.")
 
-    bdir = ctx.workdir / "build"
+    bdir = build_dir(ctx)
+    if ctx.env.build_system == "sdk":
+        return build_with_sdk(ctx, unity, extra, bdir)
+    cc, cxx = ctx.env.compilers
+    if ctx.env.toolchain == "clang" and not Path(cxx).is_file():
+        raise StageError(f"clang não encontrado em {ctx.env.llvm_mingw} (toolchain = \"clang\" no env.toml)")
+    ctx.reporter.log(f"Compilador: {ctx.env.toolchain} · pasta do build: {bdir}")
     opt = f"{ctx.env.opt_level} -DNDEBUG"
     configure = [
         "cmake", "-S", str(ctx.env.ps2recomp_src), "-B", str(bdir), "-G", "Ninja",
@@ -688,7 +736,7 @@ def build(ctx: Context) -> str:
         f"-DPS2X_RUNNER_SOURCE_DIR={unity.as_posix()}",
         f"-DPS2X_RUNNER_EXTRA_SOURCE_DIR={extra.as_posix()}",
         "-DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF",  # o agrupamento é o nosso, por faixa de endereço
-        "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++",
+        f"-DCMAKE_C_COMPILER={Path(cc).as_posix()}", f"-DCMAKE_CXX_COMPILER={Path(cxx).as_posix()}",
         f"-DCMAKE_C_FLAGS={ctx.env.cxx_flags}", f"-DCMAKE_CXX_FLAGS={ctx.env.cxx_flags}",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
@@ -709,11 +757,14 @@ def build(ctx: Context) -> str:
     return f"{dest / 'game.exe'} ({exe.stat().st_size / 1e6:.0f} MB)"
 
 
-def run_game(ctx: Context, seconds: float | None = None, max_log_bytes: int = 200 << 20) -> int | None:
+def run_game(ctx: Context, seconds: float | None = None, max_log_bytes: int = 200 << 20,
+             hidden: bool = False, shots: Path | None = None, shot_interval: float = 2.0) -> int | None:
     """Executa o jogo compilado apontando para o disco extraído.
 
     A saída vai para a interface e para work/logs/run.log (limitado, pois o runtime é muito verboso).
     Com `seconds`, encerra o processo após esse tempo e devolve None; senão devolve o código de saída.
+    `hidden` abre a janela escondida e sem som (testes); `shots` grava uma captura da imagem do jogo a cada
+    `shot_interval` segundos nessa pasta.
     """
     if not ctx.game:
         ingest(ctx)
@@ -727,7 +778,16 @@ def run_game(ctx: Context, seconds: float | None = None, max_log_bytes: int = 20
     logs.mkdir(parents=True, exist_ok=True)
     ctx.reporter.log(f'> "{exe}" "{elf}"')
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    p = subprocess.Popen([str(exe), str(elf)], cwd=exe.parent, env=tool_env(ctx.env), stdout=subprocess.PIPE,
+    env = tool_env(ctx.env)
+    if hidden:
+        env["PS2X_WINDOW_HIDDEN"] = "1"
+        env["PS2X_MUTE"] = "1"
+    if shots is not None:
+        shots = shots.resolve()  # o jogo roda na pasta dele: o caminho precisa ser absoluto
+        shots.mkdir(parents=True, exist_ok=True)
+        env["PS2X_SHOT_DIR"] = str(shots)
+        env["PS2X_SHOT_INTERVAL"] = f"{shot_interval:g}"
+    p = subprocess.Popen([str(exe), str(elf)], cwd=exe.parent, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=flags)
     ctx.current_proc = p
     timed_out = False
