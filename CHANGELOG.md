@@ -69,6 +69,8 @@ Enquanto o jogo não roda, as versões são `0.x`: `0.MINOR` muda a cada fase co
 - `env.toml`: `opt_level` e `unity_batch` para o build do código gerado.
 
 ### Corrigido
+- PS2Recomp: `ReleaseMode.cmake` define a política `CMP0069`; com `CMAKE_POLICY_VERSION_MINIMUM` (exigido pelo
+  raylib no CMake 4) o CMake 4.4 recusava `check_ipo_supported()`.
 - PS2Recomp (`ExportPS2Functions.java`): funções cujo corpo o Ghidra divide em trechos separados eram
   exportadas com fim no endereço mais alto de qualquer trecho. No God Hand isso afetava 614 funções, que
   passavam a cobrir 1,57 MB em vez de 239 KB; uma função de 140 bytes virava 21,7 MB de C++ e o build não

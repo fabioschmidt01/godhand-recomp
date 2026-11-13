@@ -1,3 +1,8 @@
+# godhand-recomp: with CMAKE_POLICY_VERSION_MINIMUM (needed by raylib on CMake 4) CMP0069 is left unset,
+# and CMake 4.4 refuses check_ipo_supported() then.
+if(POLICY CMP0069)
+    cmake_policy(SET CMP0069 NEW)
+endif()
 include(CheckIPOSupported)
 
 check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
